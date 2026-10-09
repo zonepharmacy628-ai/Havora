@@ -1,0 +1,467 @@
+// HAVORA database schema — PostgreSQL via Prisma.
+// Money is always stored as integer minor units (cents). Stay dates are calendar
+// dates (@db.Date) interpreted in the property's local timezone.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─────────────────────────────── Enums ───────────────────────────────
+
+enum Role {
+  CUSTOMER
+  OWNER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum PropertyType {
+  VILLA
+  APARTMENT
+  HOTEL
+  BEACH_HOUSE
+  CABIN
+  RESORT
+}
+
+enum ListingStatus {
+  DRAFT
+  PENDING_REVIEW
+  PUBLISHED
+  REJECTED
+  UNLISTED
+}
+
+enum CancellationPolicy {
+  FLEXIBLE
+  MODERATE
+  STRICT
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  DECLINED
+  CANCELLATION_REQUESTED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+}
+
+enum PaymentMethod {
+  PAY_AT_PROPERTY
+  ONLINE
+}
+
+enum PaymentStatus {
+  UNPAID
+  PAID
+  REFUNDED
+  VOID
+}
+
+enum PayoutStatus {
+  PENDING
+  PAID
+  FAILED
+  CANCELLED
+}
+
+enum ReviewStatus {
+  PUBLISHED
+  HIDDEN
+}
+
+enum MessageStatus {
+  NEW
+  RESOLVED
+}
+
+// ─────────────────────── Users & authentication ───────────────────────
+// User / Session / Account / Verification follow the Better Auth core schema.
+
+model User {
+  id            String     @id @default(cuid())
+  name          String
+  email         String     @unique
+  emailVerified Boolean    @default(false)
+  image         String?
+  role          Role       @default(CUSTOMER)
+  status        UserStatus @default(ACTIVE)
+  phone         String?
+  country       String?
+  bio           String?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  sessions       Session[]
+  accounts       Account[]
+  properties     Property[]
+  bookings       Booking[]       @relation("CustomerBookings")
+  reviews        Review[]
+  wishlist       Wishlist[]
+  payouts        Payout[]
+  auditLogs      AuditLog[]
+  paymentsLogged Payment[]       @relation("PaymentRecorder")
+
+  @@index([role])
+  @@index([status])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  expiresAt DateTime
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@unique([providerId, accountId])
+  @@index([userId])
+}
+
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+}
+
+/// Fixed-window counters for throttling sensitive actions (sign-in, sign-up, bookings…).
+model RateLimitBucket {
+  key         String   @id
+  count       Int      @default(0)
+  windowStart DateTime @default(now())
+}
+
+// ───────────────────────────── Properties ─────────────────────────────
+
+model Property {
+  id              String        @id @default(cuid())
+  ownerId         String
+  owner           User          @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  slug            String        @unique
+  title           String
+  summary         String
+  description     String
+  type            PropertyType
+  status          ListingStatus @default(DRAFT)
+  rejectionReason String?
+  featured        Boolean       @default(false)
+
+  // Location — latitude/longitude are optional so a geocoding provider can fill them later.
+  addressLine String
+  city        String
+  region      String?
+  country     String
+  countryCode String   @db.Char(2)
+  postalCode  String?
+  latitude    Decimal? @db.Decimal(9, 6)
+  longitude   Decimal? @db.Decimal(9, 6)
+  timezone    String   @default("UTC")
+
+  // Pricing (integer minor units)
+  currency          String @default("USD") @db.Char(3)
+  nightlyPriceCents Int
+  cleaningFeeCents  Int    @default(0)
+
+  // Capacity
+  maxGuests           Int
+  bedrooms            Int
+  beds                Int
+  bathrooms           Int
+  /// Array of { room: string, beds: string }
+  sleepingArrangements Json?
+
+  // Stay rules
+  houseRules          String[]
+  checkInFrom         String             @default("15:00")
+  checkOutBy          String             @default("11:00")
+  minNights           Int                @default(1)
+  maxNights           Int                @default(30)
+  instantBook         Boolean            @default(true)
+  payAtPropertyEnabled Boolean           @default(true)
+  cancellationPolicy  CancellationPolicy @default(MODERATE)
+
+  // Denormalised review aggregates (maintained in the same transaction as review writes)
+  ratingAvg   Float @default(0)
+  ratingCount Int   @default(0)
+
+  publishedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  images    PropertyImage[]
+  amenities PropertyAmenity[]
+  blocks    AvailabilityBlock[]
+  bookings  Booking[]
+  reviews   Review[]
+  wishlists Wishlist[]
+
+  @@index([ownerId])
+  @@index([status, featured])
+  @@index([status, city])
+  @@index([status, country])
+  @@index([status, type])
+  @@index([status, nightlyPriceCents])
+  @@index([status, ratingAvg])
+}
+
+model PropertyImage {
+  id         String   @id @default(cuid())
+  propertyId String
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  url        String
+  /// Storage provider id (e.g. Cloudinary public_id) so the asset can be removed later.
+  publicId   String?
+  alt        String   @default("")
+  position   Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@index([propertyId, position])
+}
+
+model Amenity {
+  id         String            @id @default(cuid())
+  key        String            @unique
+  label      String
+  icon       String
+  category   String
+  properties PropertyAmenity[]
+}
+
+model PropertyAmenity {
+  propertyId String
+  amenityId  String
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  amenity    Amenity  @relation(fields: [amenityId], references: [id], onDelete: Cascade)
+
+  @@id([propertyId, amenityId])
+  @@index([amenityId])
+}
+
+/// Owner-defined unavailable ranges. endDate is exclusive, like a check-out date.
+model AvailabilityBlock {
+  id         String   @id @default(cuid())
+  propertyId String
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  startDate  DateTime @db.Date
+  endDate    DateTime @db.Date
+  reason     String?
+  createdAt  DateTime @default(now())
+
+  @@index([propertyId, startDate, endDate])
+}
+
+// ────────────────────────────── Bookings ──────────────────────────────
+
+model Booking {
+  id         String   @id @default(cuid())
+  reference  String   @unique
+  propertyId String
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Restrict)
+  customerId String
+  customer   User     @relation("CustomerBookings", fields: [customerId], references: [id], onDelete: Restrict)
+
+  checkIn  DateTime      @db.Date
+  /// Exclusive: the guest leaves on this date, so it can be another guest's check-in.
+  checkOut DateTime      @db.Date
+  nights   Int
+  adults   Int
+  children Int           @default(0)
+  status   BookingStatus @default(PENDING)
+
+  // Price snapshot calculated on the server at booking time
+  currency           String @db.Char(3)
+  nightlyPriceCents  Int
+  subtotalCents      Int
+  cleaningFeeCents   Int
+  serviceFeeCents    Int
+  totalCents         Int
+  commissionRateBps  Int
+  commissionCents    Int
+  ownerEarningsCents Int
+
+  contactName     String
+  contactEmail    String
+  contactPhone    String
+  specialRequests String?
+
+  cancellationPolicy  CancellationPolicy
+  cancellationReason  String?
+  cancellationRequestedAt DateTime?
+  cancelledAt         DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  guests   BookingGuest[]
+  payments Payment[]
+  review   Review?
+  payouts  Payout[]
+
+  @@index([propertyId, checkIn, checkOut])
+  @@index([customerId, createdAt])
+  @@index([status])
+}
+
+model BookingGuest {
+  id        String  @id @default(cuid())
+  bookingId String
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  fullName  String
+  isPrimary Boolean @default(false)
+
+  @@index([bookingId])
+}
+
+/// Payment records are deliberately separate from bookings: a booking can be
+/// CONFIRMED while its payment is still UNPAID (Pay at Property).
+model Payment {
+  id           String        @id @default(cuid())
+  bookingId    String
+  booking      Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  method       PaymentMethod
+  status       PaymentStatus @default(UNPAID)
+  amountCents  Int
+  currency     String        @db.Char(3)
+  /// Reserved for a future gateway integration (provider name + its transaction id).
+  provider     String?
+  providerRef  String?
+  paidAt       DateTime?
+  recordedById String?
+  recordedBy   User?         @relation("PaymentRecorder", fields: [recordedById], references: [id], onDelete: SetNull)
+  note         String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([bookingId])
+  @@index([status])
+}
+
+/// Reserved for a future payout workflow. Nothing writes to this table in the MVP.
+model Payout {
+  id           String       @id @default(cuid())
+  ownerId      String
+  owner        User         @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  bookingId    String?
+  booking      Booking?     @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  amountCents  Int
+  currency     String       @db.Char(3)
+  status       PayoutStatus @default(PENDING)
+  reference    String?
+  scheduledFor DateTime?
+  paidAt       DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@index([ownerId, status])
+}
+
+// ───────────────────────── Reviews & wishlists ─────────────────────────
+
+model Review {
+  id         String       @id @default(cuid())
+  bookingId  String       @unique
+  booking    Booking      @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  propertyId String
+  property   Property     @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  authorId   String
+  author     User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  rating     Int
+  comment    String
+  status     ReviewStatus @default(PUBLISHED)
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  @@index([propertyId, status, createdAt])
+  @@index([authorId])
+}
+
+model Wishlist {
+  userId     String
+  propertyId String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  @@id([userId, propertyId])
+  @@index([propertyId])
+}
+
+// ─────────────────────────── Platform records ───────────────────────────
+
+model PlatformSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action     String
+  entityType String
+  entityId   String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([entityType, entityId])
+  @@index([actorId])
+}
+
+model ContactMessage {
+  id        String        @id @default(cuid())
+  name      String
+  email     String
+  subject   String
+  message   String
+  status    MessageStatus @default(NEW)
+  createdAt DateTime      @default(now())
+
+  @@index([status, createdAt])
+}
+
+model NewsletterSubscriber {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  createdAt DateTime @default(now())
+}
