@@ -34,6 +34,14 @@ enum PropertyType {
   RESORT
 }
 
+enum CategoryStatus {
+  /// Available to every host and shown on the public site.
+  ACTIVE
+  /// Requested by a property owner; waiting for an administrator's decision.
+  PENDING
+  REJECTED
+}
+
 enum ListingStatus {
   DRAFT
   PENDING_REVIEW
@@ -104,15 +112,16 @@ model User {
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
 
-  sessions       Session[]
-  accounts       Account[]
-  properties     Property[]
-  bookings       Booking[]       @relation("CustomerBookings")
-  reviews        Review[]
-  wishlist       Wishlist[]
-  payouts        Payout[]
-  auditLogs      AuditLog[]
-  paymentsLogged Payment[]       @relation("PaymentRecorder")
+  sessions         Session[]
+  accounts         Account[]
+  properties       Property[]
+  bookings         Booking[]  @relation("CustomerBookings")
+  reviews          Review[]
+  wishlist         Wishlist[]
+  payouts          Payout[]
+  auditLogs        AuditLog[]
+  paymentsLogged   Payment[]  @relation("PaymentRecorder")
+  categoryRequests Category[] @relation("CategoryRequests")
 
   @@index([role])
   @@index([status])
@@ -170,6 +179,32 @@ model RateLimitBucket {
   windowStart DateTime @default(now())
 }
 
+// ───────────────────────────── Categories ─────────────────────────────
+
+/// Property categories live in the database. Administrators create them
+/// directly; property owners can only request one (status PENDING) and an
+/// administrator approves or rejects the request.
+model Category {
+  id              String         @id @default(cuid())
+  name            String         @unique
+  slug            String         @unique
+  description     String?
+  imageUrl        String?
+  /// Storage provider id (e.g. Cloudinary public_id) so the image can be removed later.
+  imagePublicId   String?
+  status          CategoryStatus @default(ACTIVE)
+  rejectionReason String?
+  requestedById   String?
+  requestedBy     User?          @relation("CategoryRequests", fields: [requestedById], references: [id], onDelete: SetNull)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  properties Property[]
+
+  @@index([status, name])
+  @@index([requestedById])
+}
+
 // ───────────────────────────── Properties ─────────────────────────────
 
 model Property {
@@ -180,7 +215,10 @@ model Property {
   title           String
   summary         String
   description     String
-  type            PropertyType
+  /// Legacy fixed list, kept for existing rows. New code uses `category`.
+  type            PropertyType?
+  categoryId      String?
+  category        Category?     @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   status          ListingStatus @default(DRAFT)
   rejectionReason String?
   featured        Boolean       @default(false)
@@ -202,22 +240,22 @@ model Property {
   cleaningFeeCents  Int    @default(0)
 
   // Capacity
-  maxGuests           Int
-  bedrooms            Int
-  beds                Int
-  bathrooms           Int
+  maxGuests            Int
+  bedrooms             Int
+  beds                 Int
+  bathrooms            Int
   /// Array of { room: string, beds: string }
   sleepingArrangements Json?
 
   // Stay rules
-  houseRules          String[]
-  checkInFrom         String             @default("15:00")
-  checkOutBy          String             @default("11:00")
-  minNights           Int                @default(1)
-  maxNights           Int                @default(30)
-  instantBook         Boolean            @default(true)
-  payAtPropertyEnabled Boolean           @default(true)
-  cancellationPolicy  CancellationPolicy @default(MODERATE)
+  houseRules           String[]
+  checkInFrom          String             @default("15:00")
+  checkOutBy           String             @default("11:00")
+  minNights            Int                @default(1)
+  maxNights            Int                @default(30)
+  instantBook          Boolean            @default(true)
+  payAtPropertyEnabled Boolean            @default(true)
+  cancellationPolicy   CancellationPolicy @default(MODERATE)
 
   // Denormalised review aggregates (maintained in the same transaction as review writes)
   ratingAvg   Float @default(0)
@@ -239,6 +277,7 @@ model Property {
   @@index([status, city])
   @@index([status, country])
   @@index([status, type])
+  @@index([status, categoryId])
   @@index([status, nightlyPriceCents])
   @@index([status, ratingAvg])
 }
@@ -292,12 +331,17 @@ model AvailabilityBlock {
 // ────────────────────────────── Bookings ──────────────────────────────
 
 model Booking {
-  id         String   @id @default(cuid())
-  reference  String   @unique
-  propertyId String
-  property   Property @relation(fields: [propertyId], references: [id], onDelete: Restrict)
-  customerId String
-  customer   User     @relation("CustomerBookings", fields: [customerId], references: [id], onDelete: Restrict)
+  id             String   @id @default(cuid())
+  reference      String   @unique
+  propertyId     String
+  property       Property @relation(fields: [propertyId], references: [id], onDelete: Restrict)
+  /// Null for guest bookings (made without an account). Legacy account-linked bookings keep their customer.
+  customerId     String?
+  customer       User?    @relation("CustomerBookings", fields: [customerId], references: [id], onDelete: Restrict)
+  /// Client-generated key that makes checkout retries return the same booking.
+  idempotencyKey String?  @unique
+  /// Part of the signed private booking link; increasing it revokes earlier links.
+  accessVersion  Int      @default(1)
 
   checkIn  DateTime      @db.Date
   /// Exclusive: the guest leaves on this date, so it can be another guest's check-in.
@@ -323,10 +367,10 @@ model Booking {
   contactPhone    String
   specialRequests String?
 
-  cancellationPolicy  CancellationPolicy
-  cancellationReason  String?
+  cancellationPolicy      CancellationPolicy
+  cancellationReason      String?
   cancellationRequestedAt DateTime?
-  cancelledAt         DateTime?
+  cancelledAt             DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -338,6 +382,7 @@ model Booking {
 
   @@index([propertyId, checkIn, checkOut])
   @@index([customerId, createdAt])
+  @@index([contactEmail])
   @@index([status])
 }
 
@@ -402,8 +447,11 @@ model Review {
   booking    Booking      @relation(fields: [bookingId], references: [id], onDelete: Cascade)
   propertyId String
   property   Property     @relation(fields: [propertyId], references: [id], onDelete: Cascade)
-  authorId   String
-  author     User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  /// Null for reviews written by guests without an account.
+  authorId   String?
+  author     User?        @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  /// Public display name for guest reviews ("First L."). Account reviews use the author record.
+  authorName String?
   rating     Int
   comment    String
   status     ReviewStatus @default(PUBLISHED)

@@ -110,10 +110,10 @@ Open <http://localhost:3000>.
 
 | Role | How it is obtained | Can access |
 | --- | --- | --- |
-| Guest | Not signed in | Public pages, search, property details |
-| Customer | Register → "I want to book stays" | `/account/*`, bookings, wishlist, reviews |
-| Property owner | Register → "I want to host" | `/owner/*` for **their own** listings and reservations, plus customer features |
-| Administrator | Created by the seed script, or promoted by another admin | `/admin/*`, every listing and booking |
+| Guest | Not signed in — **no account needed** | Public pages, search, property details, **checkout**, their own bookings via a private link, browser wishlist |
+| Legacy customer | Accounts created before guest checkout (public customer sign-up has been removed) | Sign in to see bookings linked to the account at `/bookings` — no dashboard |
+| Property owner | Register at `/host/register` (the only public sign-up; the role is fixed on the server) | Owner Dashboard `/owner/*` for **their own** listings and reservations |
+| Administrator | Granted to one existing account through the `ADMIN_EMAIL` deployment setting (or the seed script locally). No public registration. | Admin Panel `/admin/*`, every listing and booking, plus their own listings in the Owner Dashboard |
 
 `npm run db:seed` creates:
 
@@ -139,6 +139,7 @@ Copy `.env.example` to `.env`. **Never commit `.env`** — it is git-ignored.
 | `BETTER_AUTH_SECRET` | Yes | Secret used to sign sessions. Generate with `openssl rand -base64 32`. |
 | `BETTER_AUTH_URL` | Yes (prod) | Public site URL, e.g. `https://havora.vercel.app` (no trailing slash). |
 | `NEXT_PUBLIC_APP_URL` | Yes (prod) | Same public site URL (used for metadata and trusted origins). |
+| `ADMIN_EMAIL` | Recommended (prod) | The one registered account that is granted administrator rights at each deployment. |
 | `SEED_ADMIN_EMAIL` | For seeding | Email of the administrator account created by the seed. |
 | `SEED_ADMIN_PASSWORD` | For seeding | Password for that administrator (10+ characters). |
 | `SEED_DEMO_PASSWORD` | For demo seed | Shared password for the `@havora.test` demo accounts. |
@@ -224,11 +225,129 @@ cards, badges, tables) lives in `src/app/globals.css` and `src/components/ui.tsx
 
 ---
 
+## Guest bookings, private links and dashboards
+
+HAVORA has **two dashboards only**: the Owner Dashboard (`/owner`) and the Admin Dashboard (`/admin`).
+There is no customer dashboard.
+
+- **Guest checkout.** Anyone can book without an account by entering a name, email and phone.
+  Prices and availability are still calculated and checked on the server, inside the same
+  transaction and behind the same database overlap constraint as before.
+- **Duplicate submissions.** Each checkout page view carries an idempotency key; submitting the
+  same checkout twice (double-click, retry, back button) returns the same booking.
+- **Private booking links.** A booking reference (`HV-XXXXXXXX`) is an identifier, not a password,
+  and never opens booking details by itself. Guests get a private link containing a 256-bit key
+  (an HMAC signed with `BETTER_AUTH_SECRET`; nothing secret is stored in the database). The key
+  travels in the URL fragment, is exchanged for an HttpOnly cookie and is removed from the address
+  bar. Changing `BETTER_AUTH_SECRET` invalidates all existing private links.
+- **Finding a booking.** `/bookings` lists bookings made or opened on the device. "Find my booking"
+  takes a reference and email and — if they match — emails a fresh private link to the address on
+  the booking. Responses are identical whether or not a booking exists, and are rate-limited.
+  **This requires email delivery (Resend) to be configured.**
+- **Revoking a link.** An administrator can reset a booking's private link from the booking page.
+- **Abuse limits.** Guest bookings are rate-limited per IP and per email, capped at 4 upcoming
+  bookings per email address, and the checkout form contains a honeypot field.
+- **Guest reviews.** The guest who booked can review a completed stay once, shown publicly as
+  first name and last initial only.
+- **Wishlist.** Stored in the visitor's browser (`localStorage`), so it needs no account. It is per
+  browser and per device, is not synced, and is lost if browsing data is cleared.
+- **Legacy accounts.** Existing customer accounts, bookings and reviews are untouched. Legacy
+  customers can still sign in and see their linked bookings at `/bookings`. Old `/account/...`
+  addresses redirect to the matching page.
+- **Administrators as hosts.** The administrator is the website owner and has full authority: they
+  can add and manage their own properties in the Owner Dashboard with the same account, and can
+  approve, publish, feature, unpublish and delete any listing — including their own — without a
+  second administrator. Every such action is written to the audit log (own listings are marked).
+  Property owners can never approve or publish past review: listing approval is admin-only and
+  checked on the server.
+- **Reaching the Admin Dashboard.** It is not linked from the public site or the Owner Dashboard.
+  The administrator types its address (`/admin`), signs in, and is returned to it. There is no
+  public administrator registration.
+- **Booking emails.** When Resend is configured, HAVORA emails the guest a confirmation with the
+  private link, notifies the host of new bookings and requests, and notifies each side of
+  cancellations and status changes. Without Resend none of these are sent.
+
+## Email delivery
+
+HAVORA sends plain-text transactional email through [Resend](https://resend.com) when both
+`RESEND_API_KEY` and `EMAIL_FROM` are set. `EMAIL_FROM` must use a domain verified in Resend,
+for example `HAVORA <bookings@your-domain.com>`.
+
+| Email | Sent to | When |
+| --- | --- | --- |
+| Booking confirmation / request received (with the private link) | Guest | A booking is created |
+| New booking / new request | Host | A booking is created |
+| Booking-link recovery | Guest (the address on the booking) | "Find my booking" matches, or an admin resets the link |
+| Status update (confirmed, declined, cancelled) | Guest | The host or an admin changes the booking |
+| Guest cancelled / cancellation requested | Host | The guest cancels or asks to cancel |
+| Password reset | Account holder | "Forgot password" |
+| Test email | The signed-in administrator only | Admin → Settings → "Send test email" |
+
+**The site never claims an email was sent unless the provider accepted it.**
+
+- A booking is saved first; an email problem never cancels or undoes it.
+- The confirmation page shows one of three states: sent to the guest's address, **could not be
+  sent**, or **no email is sent** (not configured). In every case the private booking link is shown
+  on the page with a copy button, and the booking stays listed under My Bookings on that device.
+- Failed confirmation and recovery emails are written to the audit log as `email.failed`.
+- "Find my booking" always gives the same reply for matching and non-matching details and sends
+  after replying, so neither the text nor the response time reveals whether a booking exists. If
+  email is not configured at all, it says so instead of promising a message.
+- Password reset says it is unavailable when email is not configured, instead of promising a link.
+- Sending waits at most 8 seconds for the provider.
+- To verify delivery without emailing any guest, use Admin → Settings → **Send test email**; it goes
+  only to your own administrator address and reports whether the provider accepted it.
+
+## Administrator access
+
+- **Admin Login URL:** `/admin/login` (typing `/admin` while signed out leads there). It is not linked
+  from the public site or the Owner Dashboard, and search engines are told not to index it.
+- **Who can sign in there:** only accounts that already hold the administrator role. The role is
+  checked *before* a session is created, and the same message is shown for an unknown email, a
+  wrong password and a non-administrator account. Attempts are rate-limited and audit-logged.
+- **How an account becomes administrator:** there is no administrator registration. Set the
+  `ADMIN_EMAIL` environment variable (one address) in Vercel. At the end of each deployment,
+  `scripts/ensure-admin.ts` grants the administrator role to the account registered with that
+  address. It only promotes an account that already exists and is active; it never creates an
+  account and never sets or changes a password. The change is written to the audit log.
+  1. Register on the live site (`/host/register`) with your own email and password.
+  2. Confirm you can sign in.
+  3. Set `ADMIN_EMAIL` to that address in Vercel → Settings → Environment Variables (Production).
+  4. Redeploy. Then sign in at `/admin/login`.
+- **After that**, other administrators can be added or removed in Admin → Users.
+- **View Website:** both dashboards have a "View Website" button that opens the public site in a
+  new tab. The public site shows only published listings, whoever is signed in — drafts and
+  listings waiting for review stay hidden (owners and administrators can use "Preview" on a
+  listing to see their own unpublished one).
+
+## Property categories
+
+Categories are stored in the database (`Category` table), not in the code. There is **no
+separate category-management page**: everything happens inside the Add / Edit Property form.
+
+- **"+ Create New Category"** sits beside the Category selector. It opens a small dialog (name,
+  optional description, optional image) without leaving the form; every other field keeps its value.
+- **Administrators** create a category directly. It is saved, added to the dropdown and selected for
+  the property being edited straight away, and is available to every host.
+- **Property owners** can only submit a request. It is stored as *pending*, shown (disabled) in
+  their dropdown with a "pending approval" label, and cannot be used on a listing until approved.
+  Owners may have up to 3 open requests.
+- **Approving requests.** An administrator sees owners' requests in the same place — under the
+  Category selector of their own Add / Edit Property form — and approves or declines them there.
+  An approved category then appears in every host's dropdown.
+- **Rules enforced on the server:** the role decides whether a category is created or only requested;
+  names are unique regardless of letter case and slugs are unique (also enforced by database
+  indexes); a listing can only be saved with a live category; all actions are audit-logged.
+- **Images** use the same signed Cloudinary upload as listing photos when Cloudinary is configured;
+  otherwise an image link from an approved host can be pasted.
+- The six original categories (Villa, Apartment, Hotel, Beach house, Cabin, Resort) are created by
+  the migration, and every existing listing is linked to its matching category.
+
 ## Security
 
 - Passwords are hashed by Better Auth (scrypt); sessions are stored in the database and sent
   in an `HttpOnly`, `SameSite=Lax` cookie that is `Secure` in production.
-- Every page under `/account`, `/owner` and `/admin` checks the session and role **on the
+- Every page under `/owner` and `/admin` checks the session and role **on the
   server**, and every server action re-checks it. Hiding a button is never the only control.
 - Ownership is verified on the server for every listing and booking operation. Requests for
   other people's records return "not found".
@@ -348,10 +467,10 @@ Run through these on the live URL after every first deploy:
 5. Register a new customer → complete a booking → you get an `HV-XXXXXXXX` reference,
    status **Confirmed**, payment **Unpaid**.
 6. The same dates now show as unavailable on that property's calendar.
-7. Visiting `/admin` and `/owner` as that customer redirects to `/account`.
+7. Visiting `/admin` and `/owner` while signed out redirects to the login page; a booking URL without its private link redirects to `/bookings`.
 8. Sign in as the administrator → `/admin` shows the new booking and user.
 9. In **Admin → Audit Logs** the booking and sign-up are listed.
-10. Sign out → `/account` redirects to the login page.
+10. Register a host at `/host/register` → you land on `/owner`; add a property, 3 photos, and submit it for review.
 
 ---
 
@@ -376,7 +495,7 @@ settings and your administrator account are kept.
 npm test
 ```
 
-runs 42 tests with Vitest:
+runs 88 tests with Vitest:
 
 - **Unit** — pricing, money parsing, date maths and timezones, stay validation, booking
   status state machine, cancellation rules, role/ownership permissions, input validation.
@@ -394,8 +513,11 @@ The test run starts its own throwaway database on port 54331; your development d
 
 - **No online payments** (by design for this release) and therefore no automatic refunds or
   owner payouts. Commission settlement with hosts is manual. See `docs/PAYMENTS.md`.
-- **Email** is limited to password reset, and only when Resend is configured. Booking
-  confirmation / host notification emails are not sent yet.
+- **Email** (password reset, booking confirmations with the private link, host notifications) is only
+  sent when Resend is configured. Until then a guest who loses their private link cannot recover
+  the booking by themselves.
+- **Guest bookings are not email-verified** and there is no CAPTCHA; protection against fake
+  bookings relies on rate limits, the per-email cap and hosts/admins cancelling abusive bookings.
 - **Email verification** on sign-up is not enforced.
 - **Single currency** — prices are stored and shown in USD. The schema stores a currency per
   listing/booking so more can be added; no currency conversion is performed.

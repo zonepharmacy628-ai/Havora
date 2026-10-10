@@ -1,38 +1,36 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useOptimistic, useState, useTransition } from "react";
+import Link from "next/link";
+import { useState } from "react";
 import { Heart } from "lucide-react";
-import { toggleWishlistAction } from "@/actions/misc";
+import { toggleWishlist, useWishlist } from "@/lib/wishlist-store";
 
-type Props = { propertyId: string; initialSaved: boolean; variant?: "icon" | "button" };
+type Props = { propertyId: string; variant?: "icon" | "button" };
 
-export function WishlistButton({ propertyId, initialSaved, variant = "icon" }: Props) {
-  const router = useRouter();
-  const [saved, setSaved] = useState(initialSaved);
-  const [optimisticSaved, setOptimisticSaved] = useOptimistic(saved);
-  const [pending, startTransition] = useTransition();
+/** Saves a property to the browser wishlist — no account needed. */
+export function WishlistButton({ propertyId, variant = "icon" }: Props) {
+  const saved = useWishlist().includes(propertyId);
+  const [failed, setFailed] = useState(false);
 
   function toggle() {
-    startTransition(async () => {
-      setOptimisticSaved(!saved);
-      const result = await toggleWishlistAction(propertyId);
-      if (result.needsLogin) {
-        router.push(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
-        return;
-      }
-      if (result.ok) setSaved(result.saved);
-    });
+    setFailed(!toggleWishlist(propertyId));
   }
 
-  const label = optimisticSaved ? "Remove from wishlist" : "Add to wishlist";
+  const label = saved ? "Remove from wishlist" : "Add to wishlist";
 
   if (variant === "button") {
     return (
-      <button type="button" onClick={toggle} disabled={pending} aria-pressed={optimisticSaved} className="btn btn-outline w-full">
-        <Heart className={`size-4 ${optimisticSaved ? "fill-gold-500 text-gold-500" : ""}`} aria-hidden="true" />
-        {optimisticSaved ? "Saved to wishlist" : "Add to wishlist"}
-      </button>
+      <div>
+        <button type="button" onClick={toggle} aria-pressed={saved} className="btn btn-outline w-full">
+          <Heart className={`size-4 ${saved ? "fill-gold-500 text-gold-500" : ""}`} aria-hidden="true" />
+          {saved ? "Saved to wishlist" : "Add to wishlist"}
+        </button>
+        {failed && (
+          <p role="alert" className="mt-1.5 text-xs text-red-600">
+            Your browser blocked saving this. Check that site storage is allowed.
+          </p>
+        )}
+      </div>
     );
   }
 
@@ -40,13 +38,32 @@ export function WishlistButton({ propertyId, initialSaved, variant = "icon" }: P
     <button
       type="button"
       onClick={toggle}
-      disabled={pending}
-      aria-pressed={optimisticSaved}
+      aria-pressed={saved}
       aria-label={label}
-      title={label}
+      title={failed ? "Your browser blocked saving this" : label}
       className="flex size-9 cursor-pointer items-center justify-center rounded-full bg-navy-950/45 text-white backdrop-blur-sm transition hover:bg-navy-950/70"
     >
-      <Heart className={`size-[18px] transition ${optimisticSaved ? "fill-gold-400 text-gold-400" : ""}`} aria-hidden="true" />
+      <Heart className={`size-[18px] transition ${saved ? "fill-gold-400 text-gold-400" : ""}`} aria-hidden="true" />
     </button>
+  );
+}
+
+/** Header link to the wishlist page with a live count. */
+export function WishlistLink({ className = "" }: { className?: string }) {
+  const count = useWishlist().length;
+  return (
+    <Link
+      href="/wishlist"
+      aria-label={count > 0 ? `Wishlist, ${count} saved` : "Wishlist"}
+      title="Wishlist"
+      className={`relative flex size-10 items-center justify-center rounded-full text-navy-200 transition hover:text-gold-300 ${className}`}
+    >
+      <Heart className="size-5" aria-hidden="true" />
+      {count > 0 && (
+        <span className="absolute top-0.5 right-0.5 flex min-w-[18px] items-center justify-center rounded-full bg-gold-500 px-1 text-[10px] leading-[18px] font-bold text-navy-950">
+          {count}
+        </span>
+      )}
+    </Link>
   );
 }

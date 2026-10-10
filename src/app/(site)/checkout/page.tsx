@@ -7,13 +7,13 @@ import { createBookingAction } from "@/actions/booking";
 import { ActionForm, SubmitButton, TextAreaField, TextField } from "@/components/forms";
 import { EmptyState, Rating } from "@/components/ui";
 import { freeCancellationDeadline, validateStay } from "@/lib/booking-rules";
-import { findConflict } from "@/lib/bookings";
+import { findConflict, newIdempotencyKey } from "@/lib/bookings";
 import { CANCELLATION_POLICIES, HERO_IMAGE } from "@/lib/constants";
 import { formatDate, nightsBetween, todayIn } from "@/lib/dates";
 import { formatMoney } from "@/lib/money";
 import { calculateQuote } from "@/lib/pricing";
 import { prisma } from "@/lib/prisma";
-import { requireUser } from "@/lib/session";
+import { getCurrentUser } from "@/lib/session";
 import { getSettings } from "@/lib/settings";
 import { staySchema } from "@/lib/validation";
 
@@ -43,8 +43,8 @@ function Unavailable({ title, text, href }: { title: string; text: string; href:
 export default async function CheckoutPage({ searchParams }: Props) {
   const query = await searchParams;
   const slug = str(query.property);
-  const qs = new URLSearchParams(Object.entries(query).map(([key, value]) => [key, str(value)])).toString();
-  const user = await requireUser(`/checkout?${qs}`);
+  // Guests check out without an account. A signed-in host/admin/legacy customer is only used to pre-fill the form.
+  const user = await getCurrentUser();
 
   const property = slug
     ? await prisma.property.findUnique({
@@ -62,7 +62,7 @@ export default async function CheckoutPage({ searchParams }: Props) {
   // Everything below is validated and priced on the server from database values.
   const today = todayIn(property.timezone);
   const problem =
-    property.ownerId === user.id
+    user && property.ownerId === user.id
       ? "You cannot book your own property."
       : validateStay({ ...stay, today, property });
   if (problem) return <Unavailable title="This stay can't be booked" text={problem} href={backHref} />;
@@ -92,7 +92,7 @@ export default async function CheckoutPage({ searchParams }: Props) {
         <div className="hero-overlay absolute inset-0 -z-10" />
         <div className="container-page py-10">
           <h1 className="font-serif text-4xl font-medium tracking-tight text-white">Booking Checkout</h1>
-          <p className="mt-2 text-[15px] text-navy-200">Complete your reservation.</p>
+          <p className="mt-2 text-[15px] text-navy-200">Complete your reservation — no account needed.</p>
         </div>
       </section>
 
@@ -105,6 +105,15 @@ export default async function CheckoutPage({ searchParams }: Props) {
           <input type="hidden" name="checkOut" value={stay.checkOut} />
           <input type="hidden" name="adults" value={stay.adults} />
           <input type="hidden" name="children" value={stay.children} />
+          {/* Makes a double-click or retry return the same booking instead of creating a second one. */}
+          <input type="hidden" name="idempotencyKey" value={newIdempotencyKey()} />
+          {/* Honeypot for automated submissions — hidden from people and assistive technology. */}
+          <div aria-hidden="true" className="absolute -left-[9999px] h-0 w-0 overflow-hidden">
+            <label>
+              Company
+              <input type="text" name="company" tabIndex={-1} autoComplete="off" />
+            </label>
+          </div>
 
           <div className="space-y-6">
             <section className="card card-pad" aria-labelledby="property-details">
@@ -148,9 +157,9 @@ export default async function CheckoutPage({ searchParams }: Props) {
             <section className="card card-pad" aria-labelledby="guest-info">
               <h2 id="guest-info" className="mb-4 font-serif text-xl font-medium text-ink">Guest Information</h2>
               <div className="grid gap-4 sm:grid-cols-2">
-                <TextField name="contactName" label="Full name" defaultValue={user.name} autoComplete="name" required className="sm:col-span-2" />
-                <TextField name="contactEmail" label="Email address" type="email" defaultValue={user.email} autoComplete="email" required />
-                <TextField name="contactPhone" label="Phone number" type="tel" defaultValue={user.phone ?? ""} placeholder="+1 234 567 8900" autoComplete="tel" required hint="Include your country code so the host can reach you." />
+                <TextField name="contactName" label="Full name" defaultValue={user?.name} autoComplete="name" required className="sm:col-span-2" />
+                <TextField name="contactEmail" label="Email address" type="email" defaultValue={user?.email} autoComplete="email" required hint="Your confirmation and private booking link are sent here." />
+                <TextField name="contactPhone" label="Phone number" type="tel" defaultValue={user?.phone ?? ""} placeholder="+1 234 567 8900" autoComplete="tel" required hint="Include your country code so the host can reach you." />
                 {guests > 1 && (
                   <TextAreaField name="additionalGuests" label="Other guests (optional)" rows={2} placeholder="One name per line" className="sm:col-span-2" />
                 )}

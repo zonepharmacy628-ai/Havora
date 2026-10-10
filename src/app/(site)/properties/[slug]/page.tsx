@@ -10,10 +10,10 @@ import { AmenityIcon, Avatar, Notice, Rating, SectionHeading, Stars } from "@/co
 import { WishlistButton } from "@/components/wishlist-button";
 import { canManageProperty } from "@/lib/booking-rules";
 import { getUnavailableRanges } from "@/lib/bookings";
-import { CANCELLATION_POLICIES, LISTING_STATUS_LABEL, propertyTypeLabel } from "@/lib/constants";
+import { CANCELLATION_POLICIES, LISTING_STATUS_LABEL } from "@/lib/constants";
 import { formatDate, isIsoDate, todayIn } from "@/lib/dates";
 import { prisma } from "@/lib/prisma";
-import { cardSelect, getWishlistIds } from "@/lib/properties";
+import { cardSelect } from "@/lib/properties";
 import { getCurrentUser } from "@/lib/session";
 import { getSettings } from "@/lib/settings";
 
@@ -24,6 +24,7 @@ const getProperty = cache((slug: string) =>
     where: { slug },
     include: {
       images: { orderBy: { position: "asc" } },
+      category: { select: { name: true } },
       amenities: { include: { amenity: true }, orderBy: { amenity: { label: "asc" } } },
       owner: { select: { id: true, name: true, bio: true, country: true, createdAt: true, status: true, _count: { select: { properties: { where: { status: "PUBLISHED" } } } } } },
     },
@@ -54,18 +55,17 @@ export default async function PropertyPage({ params, searchParams }: Props) {
   if (!isLive && !isManager) notFound();
 
   const today = todayIn(property.timezone);
-  const [settings, unavailable, reviews, wishlist, similar] = await Promise.all([
+  const [settings, unavailable, reviews, similar] = await Promise.all([
     getSettings(),
     getUnavailableRanges(prisma, property.id, today),
     prisma.review.findMany({
       where: { propertyId: property.id, status: "PUBLISHED" },
       orderBy: { createdAt: "desc" },
       take: 8,
-      select: { id: true, rating: true, comment: true, createdAt: true, author: { select: { name: true, country: true } } },
+      select: { id: true, rating: true, comment: true, createdAt: true, authorName: true, author: { select: { name: true, country: true } } },
     }),
-    getWishlistIds(user?.id),
     prisma.property.findMany({
-      where: { status: "PUBLISHED", owner: { status: "ACTIVE" }, id: { not: property.id }, OR: [{ city: property.city }, { type: property.type }] },
+      where: { status: "PUBLISHED", owner: { status: "ACTIVE" }, id: { not: property.id }, OR: [{ city: property.city }, ...(property.categoryId ? [{ categoryId: property.categoryId }] : [])] },
       orderBy: [{ ratingAvg: "desc" }, { ratingCount: "desc" }],
       take: 4,
       select: cardSelect,
@@ -126,7 +126,7 @@ export default async function PropertyPage({ params, searchParams }: Props) {
       >
         <div className="mt-8 grid gap-10 lg:grid-cols-[1fr_380px]">
           <div className="min-w-0">
-            <p className="eyebrow mb-2">{propertyTypeLabel(property.type)}</p>
+            <p className="eyebrow mb-2">{property.category?.name ?? "Stay"}</p>
             <h1 className="heading-serif text-3xl leading-tight sm:text-[40px]">{property.title}</h1>
             <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-muted">
               <span className="flex items-center gap-1.5">
@@ -257,11 +257,11 @@ export default async function PropertyPage({ params, searchParams }: Props) {
                   {reviews.map((review) => (
                     <li key={review.id} className="rounded-xl border border-cream-200 bg-white p-5">
                       <div className="flex items-center gap-3">
-                        <Avatar name={review.author.name} />
+                        <Avatar name={review.author?.name ?? review.authorName ?? "Guest"} />
                         <div>
-                          <p className="text-sm font-semibold text-ink">{review.author.name}</p>
+                          <p className="text-sm font-semibold text-ink">{review.author?.name ?? review.authorName ?? "Guest"}</p>
                           <p className="text-xs text-muted">
-                            {review.author.country ? `${review.author.country} · ` : ""}
+                            {review.author?.country ? `${review.author.country} · ` : ""}
                             {formatDate(review.createdAt)}
                           </p>
                         </div>
@@ -279,7 +279,7 @@ export default async function PropertyPage({ params, searchParams }: Props) {
 
           <aside className="space-y-5 lg:sticky lg:top-24 lg:self-start">
             <BookingPanel>
-              <WishlistButton propertyId={property.id} initialSaved={wishlist.has(property.id)} variant="button" />
+              <WishlistButton propertyId={property.id} variant="button" />
             </BookingPanel>
             {isOwnListing && <Notice>This is your listing, so it cannot be booked from your account.</Notice>}
 
@@ -309,7 +309,7 @@ export default async function PropertyPage({ params, searchParams }: Props) {
           <SectionHeading title="Similar properties" subtitle="More stays you might like." href="/properties" />
           <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
             {similar.map((item) => (
-              <PropertyCard key={item.id} property={item} saved={wishlist.has(item.id)} />
+              <PropertyCard key={item.id} property={item} />
             ))}
           </div>
         </section>

@@ -1,7 +1,7 @@
 import "server-only";
-import { Prisma, type PropertyType } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { ACTIVE_BOOKING_STATUSES } from "./booking-rules";
-import { DESTINATION_IMAGES, PAGE_SIZE, PROPERTY_TYPES, SORT_OPTIONS, type SortValue } from "./constants";
+import { DESTINATION_IMAGES, PAGE_SIZE, SORT_OPTIONS, type SortValue } from "./constants";
 import { isIsoDate, parseDate } from "./dates";
 import { prisma } from "./prisma";
 
@@ -12,7 +12,8 @@ export type PropertyFilters = {
   checkIn: string | null;
   checkOut: string | null;
   guests: number;
-  types: PropertyType[];
+  /** Category slugs. */
+  categories: string[];
   minPrice: number | null;
   maxPrice: number | null;
   amenities: string[];
@@ -36,7 +37,6 @@ export function parseFilters(params: SearchParams): PropertyFilters {
   const checkIn = first(params.checkIn);
   const checkOut = first(params.checkOut);
   const datesValid = isIsoDate(checkIn) && isIsoDate(checkOut) && checkOut > checkIn;
-  const validTypes = new Set(PROPERTY_TYPES.map((t) => t.value));
   const sort = first(params.sort) as SortValue;
   const rating = positiveInt(first(params.rating), 5);
 
@@ -45,7 +45,10 @@ export function parseFilters(params: SearchParams): PropertyFilters {
     checkIn: datesValid ? checkIn : null,
     checkOut: datesValid ? checkOut : null,
     guests: positiveInt(first(params.guests), 30) ?? 1,
-    types: list(params.type).filter((t): t is PropertyType => validTypes.has(t as PropertyType)),
+    // `type=VILLA` is the old form of this filter; it still works so existing links don't break.
+    categories: [...list(params.category), ...list(params.type).map((t) => t.toLowerCase().replace(/_/g, "-"))]
+      .filter((slug) => /^[a-z0-9-]{1,60}$/.test(slug))
+      .slice(0, 20),
     minPrice: positiveInt(first(params.minPrice), 100_000),
     maxPrice: positiveInt(first(params.maxPrice), 100_000),
     amenities: list(params.amenity).slice(0, 12),
@@ -63,7 +66,7 @@ export function buildWhere(filters: PropertyFilters): Prisma.PropertyWhereInput 
     and.push({ OR: [{ city: contains }, { country: contains }, { region: contains }, { title: contains }] });
   }
   if (filters.guests > 1) and.push({ maxGuests: { gte: filters.guests } });
-  if (filters.types.length) and.push({ type: { in: filters.types } });
+  if (filters.categories.length) and.push({ category: { slug: { in: filters.categories } } });
   if (filters.minPrice) and.push({ nightlyPriceCents: { gte: filters.minPrice * 100 } });
   if (filters.maxPrice) and.push({ nightlyPriceCents: { lte: filters.maxPrice * 100 } });
   if (filters.rating) and.push({ ratingAvg: { gte: filters.rating }, ratingCount: { gt: 0 } });
@@ -91,7 +94,7 @@ export const cardSelect = {
   id: true,
   slug: true,
   title: true,
-  type: true,
+  category: { select: { name: true } },
   city: true,
   country: true,
   currency: true,
@@ -166,15 +169,14 @@ export async function getPopularDestinations(take = 5) {
   );
 }
 
-export async function getTypeCounts() {
-  const groups = await prisma.property.groupBy({ by: ["type"], where: publicWhere, _count: { _all: true } });
-  return new Map(groups.map((g) => [g.type, g._count._all]));
-}
-
-export async function getWishlistIds(userId: string | undefined): Promise<Set<string>> {
-  if (!userId) return new Set();
-  const rows = await prisma.wishlist.findMany({ where: { userId }, select: { propertyId: true } });
-  return new Set(rows.map((row) => row.propertyId));
+/**
+ * Properties a legacy account saved before the wishlist moved into the browser.
+ * Read-only: the rows are kept, and imported once into the visitor's browser.
+ */
+export async function getLegacyWishlistIds(userId: string | undefined): Promise<string[]> {
+  if (!userId) return [];
+  const rows = await prisma.wishlist.findMany({ where: { userId }, orderBy: { createdAt: "desc" }, select: { propertyId: true } });
+  return rows.map((row) => row.propertyId);
 }
 
 export function slugify(input: string): string {

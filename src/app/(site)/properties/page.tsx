@@ -9,8 +9,8 @@ import { EmptyState, Pagination } from "@/components/ui";
 import { HERO_IMAGE, PAGE_SIZE } from "@/lib/constants";
 import { formatDateRange, toIso } from "@/lib/dates";
 import { prisma } from "@/lib/prisma";
-import { getTypeCounts, getWishlistIds, parseFilters, searchProperties, type SearchParams } from "@/lib/properties";
-import { getCurrentUser } from "@/lib/session";
+import { getPublicCategories } from "@/lib/categories";
+import { parseFilters, searchProperties, type SearchParams } from "@/lib/properties";
 
 export const metadata: Metadata = {
   title: "Explore Properties",
@@ -20,12 +20,10 @@ export const metadata: Metadata = {
 export default async function PropertiesPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   const raw = await searchParams;
   const filters = parseFilters(raw);
-  const user = await getCurrentUser();
-  const [{ items, total, pages }, amenities, typeCounts, wishlist] = await Promise.all([
+  const [{ items, total, pages }, amenities, categories] = await Promise.all([
     searchProperties(filters),
     prisma.amenity.findMany({ orderBy: { label: "asc" }, select: { key: true, label: true } }),
-    getTypeCounts(),
-    getWishlistIds(user?.id),
+    getPublicCategories(),
   ]);
 
   // Canonical query string for the current filters (used by sort + pagination links).
@@ -36,7 +34,7 @@ export default async function PropertiesPage({ searchParams }: { searchParams: P
     params.set("checkOut", filters.checkOut);
   }
   if (filters.guests > 1) params.set("guests", String(filters.guests));
-  if (filters.types.length) params.set("type", filters.types.join(","));
+  if (filters.categories.length) params.set("category", filters.categories.join(","));
   if (filters.amenities.length) params.set("amenity", filters.amenities.join(","));
   if (filters.minPrice) params.set("minPrice", String(filters.minPrice));
   if (filters.maxPrice) params.set("maxPrice", String(filters.maxPrice));
@@ -59,7 +57,7 @@ export default async function PropertiesPage({ searchParams }: { searchParams: P
   const stayQuery = stay.size ? `?${stay.toString()}` : "";
 
   const preserve: Record<string, string> = {};
-  for (const key of ["type", "amenity", "minPrice", "maxPrice", "rating", "sort"]) {
+  for (const key of ["category", "amenity", "minPrice", "maxPrice", "rating", "sort"]) {
     const value = params.get(key);
     if (value) preserve[key] = value;
   }
@@ -84,7 +82,7 @@ export default async function PropertiesPage({ searchParams }: { searchParams: P
 
       <div className="container-page grid gap-8 py-10 lg:grid-cols-[270px_1fr]">
         <aside>
-          <Filters filters={filters} amenities={amenities} typeCounts={Object.fromEntries(typeCounts)} />
+          <Filters filters={filters} amenities={amenities} categories={categories.map(({ slug, name, count }) => ({ slug, name, count }))} />
         </aside>
 
         <section aria-live="polite">
@@ -118,7 +116,7 @@ export default async function PropertiesPage({ searchParams }: { searchParams: P
           ) : (
             <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
               {items.map((property, index) => (
-                <PropertyCard key={property.id} property={property} saved={wishlist.has(property.id)} query={stayQuery} showButton priority={index < 3} />
+                <PropertyCard key={property.id} property={property} query={stayQuery} showButton priority={index < 3} />
               ))}
             </div>
           )}

@@ -11,12 +11,13 @@ const COLUMNS = [
       { href: "/properties", label: "Properties" },
       { href: "/about", label: "About Us" },
       { href: "/contact", label: "Contact" },
-      { href: "/register?type=owner", label: "Become a Host" },
+      { href: "/host", label: "List Your Property" },
     ],
   },
   {
     title: "Support",
     links: [
+      { href: "/bookings", label: "Find My Booking" },
       { href: "/help", label: "Help Center & FAQ" },
       { href: "/cancellation-policy", label: "Cancellation Policy" },
       { href: "/terms", label: "Terms & Conditions" },
@@ -35,6 +36,10 @@ export async function SiteFooter() {
           <p className="mt-5 max-w-xs text-sm leading-6">
             Handpicked villas, apartments and hotels in the world&apos;s most beautiful destinations — reserved online, paid at the property.
           </p>
+          <Link href="/host" className="btn btn-gold btn-sm mt-5 px-4 py-2">
+            List Your Property
+          </Link>
+          <br />
           <a href={`mailto:${supportEmail}`} className="mt-4 inline-block text-sm font-medium text-gold-400 hover:text-gold-300">
             {supportEmail}
           </a>

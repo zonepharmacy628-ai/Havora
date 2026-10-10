@@ -102,14 +102,26 @@ export function canManageProperty(actor: Actor, property: { ownerId: string }): 
   return isAdmin(actor) || (actor.role === "OWNER" && property.ownerId === actor.id);
 }
 
-export function canViewBooking(actor: Actor, booking: { customerId: string; property: { ownerId: string } }): boolean {
+export function canViewBooking(actor: Actor, booking: { customerId: string | null; property: { ownerId: string } }): boolean {
   return isAdmin(actor) || booking.customerId === actor.id || canManageProperty(actor, booking.property);
 }
+
+/**
+ * Only administrators approve, publish, feature or unpublish listings. The
+ * administrator is the website owner, so this includes listings they own
+ * themselves. Owners can never approve anything — not even their own listings.
+ */
+export function canApproveListing(actor: Actor): boolean {
+  return isAdmin(actor);
+}
+
+/** Roles that may create and manage their own listings. */
+export const HOST_ROLES: Role[] = ["OWNER", "ADMIN"];
 
 /** Which booking-actor hat the user wears for a given booking (null = no access). */
 export function bookingActorFor(
   actor: Actor,
-  booking: { customerId: string; property: { ownerId: string } },
+  booking: { customerId: string | null; property: { ownerId: string } },
 ): BookingActor | null {
   if (isAdmin(actor)) return "ADMIN";
   if (canManageProperty(actor, booking.property)) return "OWNER";

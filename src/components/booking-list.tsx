@@ -8,7 +8,6 @@ import { BookingBadge, PaymentBadge } from "./ui";
 
 export const bookingListInclude = {
   property: { select: { title: true, city: true, country: true, images: { orderBy: { position: "asc" }, take: 1, select: { url: true } } } },
-  customer: { select: { name: true } },
   payments: { select: { status: true }, orderBy: { createdAt: "asc" }, take: 1 },
 } satisfies Prisma.BookingInclude;
 
@@ -74,7 +73,7 @@ export function ReservationTable({ bookings, showEarnings = false }: { bookings:
                 </Link>
               </td>
               <td className="max-w-52 truncate font-medium text-ink">{booking.property.title}</td>
-              <td className="text-muted">{booking.customer.name}</td>
+              <td className="text-muted">{booking.contactName}</td>
               <td className="whitespace-nowrap text-muted">{formatDateRange(booking.checkIn, booking.checkOut)}</td>
               <td>
                 <BookingBadge status={booking.status} />

@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "prisma generate && next build",
-    "vercel-build": "prisma generate && prisma migrate deploy && next build",
+    "vercel-build": "prisma generate && prisma migrate deploy && tsx scripts/ensure-admin.ts && next build",
     "start": "next start",
     "lint": "eslint src scripts prisma tests",
     "typecheck": "tsc --noEmit",
@@ -16,7 +16,8 @@
     "db:deploy": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
-    "db:remove-demo": "tsx scripts/remove-demo.ts"
+    "db:remove-demo": "tsx scripts/remove-demo.ts",
+    "admin:ensure": "tsx scripts/ensure-admin.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",

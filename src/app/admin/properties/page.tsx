@@ -6,7 +6,7 @@ import { reviewListingAction } from "@/actions/admin";
 import { StatusTabs } from "@/components/booking-list";
 import { ActionForm, SubmitButton, TextField } from "@/components/forms";
 import { EmptyState, ListingBadge, PageHeader } from "@/components/ui";
-import { LISTING_STATUS_LABEL, propertyTypeLabel } from "@/lib/constants";
+import { LISTING_STATUS_LABEL } from "@/lib/constants";
 import { formatDate } from "@/lib/dates";
 import { formatMoney } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
@@ -15,7 +15,7 @@ import { requireRole } from "@/lib/session";
 const STATUSES: ListingStatus[] = ["PENDING_REVIEW", "PUBLISHED", "REJECTED", "UNLISTED", "DRAFT"];
 
 export default async function AdminPropertiesPage({ searchParams }: { searchParams: Promise<{ status?: string }> }) {
-  await requireRole(["ADMIN"], "/admin/properties");
+  const admin = await requireRole(["ADMIN"], "/admin/properties");
   const { status = "" } = await searchParams;
   const current = STATUSES.includes(status as ListingStatus) ? (status as ListingStatus) : null;
 
@@ -26,6 +26,7 @@ export default async function AdminPropertiesPage({ searchParams }: { searchPara
       take: 100,
       include: {
         images: { orderBy: { position: "asc" }, take: 1 },
+        category: { select: { name: true } },
         owner: { select: { name: true, email: true } },
         _count: { select: { images: true, bookings: true } },
       },
@@ -62,6 +63,7 @@ export default async function AdminPropertiesPage({ searchParams }: { searchPara
                   <div className="flex flex-wrap items-center gap-2">
                     <h2 className="font-serif text-lg font-medium text-ink">{property.title}</h2>
                     <ListingBadge status={property.status} />
+                    {property.ownerId === admin.id && <span className="badge bg-navy-800 text-gold-300">Your listing</span>}
                     {property.featured && (
                       <span className="badge bg-gold-500 text-navy-950">
                         <Star className="size-3" aria-hidden="true" /> Featured
@@ -69,7 +71,7 @@ export default async function AdminPropertiesPage({ searchParams }: { searchPara
                     )}
                   </div>
                   <p className="mt-0.5 text-[13px] text-muted">
-                    {propertyTypeLabel(property.type)} · {property.city}, {property.country} · {formatMoney(property.nightlyPriceCents, property.currency)} / night · sleeps {property.maxGuests}
+                    {property.category?.name ?? "Uncategorised"} · {property.city}, {property.country} · {formatMoney(property.nightlyPriceCents, property.currency)} / night · sleeps {property.maxGuests}
                   </p>
                   <p className="mt-1 text-xs text-muted">
                     Owner: <span className="font-medium text-ink">{property.owner.name}</span> ({property.owner.email}) · {property._count.images} photos · {property._count.bookings} bookings · updated {formatDate(property.updatedAt)}

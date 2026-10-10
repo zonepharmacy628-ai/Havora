@@ -41,7 +41,7 @@ export default async function AboutPage() {
               We started HAVORA with a simple belief: finding a remarkable place to stay should feel as good as arriving there. That means fewer, better listings, clear information and a booking process you can trust.
             </p>
             <p>
-              Guests reserve online in a few steps and pay the host directly at the property. Hosts get the tools they need — listings, calendars, reservations and earnings — in one calm dashboard.
+              Guests reserve online in a few steps, without creating an account, and pay the host directly at the property. Hosts get the tools they need — listings, calendars, reservations and earnings — in one calm dashboard.
             </p>
           </div>
           <dl className="mt-8 grid grid-cols-3 gap-4 border-t border-cream-200 pt-6">
@@ -82,8 +82,8 @@ export default async function AboutPage() {
           <Link href="/properties" className="btn btn-gold btn-lg">
             Explore properties
           </Link>
-          <Link href="/register?type=owner" className="btn btn-outline btn-lg">
-            Become a host
+          <Link href="/host" className="btn btn-outline btn-lg">
+            List your property
           </Link>
         </div>
       </section>

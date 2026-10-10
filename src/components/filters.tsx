@@ -3,17 +3,18 @@
 import { useRouter } from "next/navigation";
 import { useRef, useState, useTransition } from "react";
 import { Loader2, SlidersHorizontal, X } from "lucide-react";
-import { PROPERTY_TYPES, SORT_OPTIONS } from "@/lib/constants";
+import { SORT_OPTIONS } from "@/lib/constants";
 import type { PropertyFilters } from "@/lib/properties";
 
 type Props = {
   filters: PropertyFilters;
   amenities: { key: string; label: string }[];
-  typeCounts: Record<string, number>;
+  /** Live categories from the database, with their number of published listings. */
+  categories: { slug: string; name: string; count: number }[];
 };
 
 /** Sidebar filters. Every control updates the URL, and the server re-queries the database. */
-export function Filters({ filters, amenities, typeCounts }: Props) {
+export function Filters({ filters, amenities, categories }: Props) {
   const router = useRouter();
   const formRef = useRef<HTMLFormElement>(null);
   const [pending, startTransition] = useTransition();
@@ -32,8 +33,8 @@ export function Filters({ filters, amenities, typeCounts }: Props) {
     }
     if (filters.guests > 1) params.set("guests", String(filters.guests));
 
-    const types = data.getAll("type").map(String);
-    if (types.length) params.set("type", types.join(","));
+    const chosen = data.getAll("category").map(String);
+    if (chosen.length) params.set("category", chosen.join(","));
     const amenityKeys = data.getAll("amenity").map(String);
     if (amenityKeys.length) params.set("amenity", amenityKeys.join(","));
     for (const name of ["minPrice", "maxPrice", "rating"]) {
@@ -47,7 +48,7 @@ export function Filters({ filters, amenities, typeCounts }: Props) {
   }
 
   const activeCount =
-    filters.types.length + filters.amenities.length + (filters.minPrice ? 1 : 0) + (filters.maxPrice ? 1 : 0) + (filters.rating ? 1 : 0);
+    filters.categories.length + filters.amenities.length + (filters.minPrice ? 1 : 0) + (filters.maxPrice ? 1 : 0) + (filters.rating ? 1 : 0);
 
   const groupTitle = "mb-3 text-[13px] font-semibold text-ink";
   const option = "flex cursor-pointer items-center justify-between gap-2 py-1 text-[13px] text-ink";
@@ -104,14 +105,14 @@ export function Filters({ filters, amenities, typeCounts }: Props) {
         </fieldset>
 
         <fieldset>
-          <legend className={groupTitle}>Property Type</legend>
-          {PROPERTY_TYPES.map((type) => (
-            <label key={type.value} className={option}>
+          <legend className={groupTitle}>Category</legend>
+          {categories.map((category) => (
+            <label key={category.slug} className={option}>
               <span className="flex items-center gap-2.5">
-                <input type="checkbox" name="type" value={type.value} defaultChecked={filters.types.includes(type.value)} className="checkbox" />
-                {type.plural}
+                <input type="checkbox" name="category" value={category.slug} defaultChecked={filters.categories.includes(category.slug)} className="checkbox" />
+                {category.name}
               </span>
-              <span className="text-xs text-muted">{typeCounts[type.value] ?? 0}</span>
+              <span className="text-xs text-muted">{category.count}</span>
             </label>
           ))}
         </fieldset>

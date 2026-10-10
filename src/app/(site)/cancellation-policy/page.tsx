@@ -26,7 +26,7 @@ export default function CancellationPolicyPage() {
           <h2>How cancelling works</h2>
           <ul>
             <li>
-              <strong>Inside the free cancellation window</strong> — you can cancel instantly from <Link href="/account/bookings">My Bookings</Link>. The booking is cancelled and nothing is owed.
+              <strong>Inside the free cancellation window</strong> — open your booking with your private link (or <Link href="/bookings">find your booking</Link>) and cancel instantly. The booking is cancelled and nothing is owed.
             </li>
             <li>
               <strong>After the window closes</strong> — you can send a cancellation request. The host reviews it and either approves the cancellation or keeps the booking in place.

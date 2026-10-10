@@ -28,7 +28,7 @@ async function main() {
   const ids = demoUsers.map((user) => user.id);
   const involved = { OR: [{ customerId: { in: ids } }, { property: { ownerId: { in: ids } } }] };
   const realBookings = await prisma.booking.count({
-    where: { property: { ownerId: { in: ids } }, customerId: { notIn: ids } },
+    where: { property: { ownerId: { in: ids } }, OR: [{ customerId: null }, { customerId: { notIn: ids } }] },
   });
   if (realBookings > 0) {
     throw new Error(`${realBookings} booking(s) by real customers exist on demo listings. Resolve those before removing demo data.`);

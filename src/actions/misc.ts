@@ -1,32 +1,25 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { safely, TOO_MANY } from "@/lib/action-utils";
 import { rateLimitByIp } from "@/lib/rate-limit";
-import { getCurrentUser } from "@/lib/session";
+import { cardSelect, type PropertyCardData } from "@/lib/properties";
 import { contactSchema, formToObject, invalid, newsletterSchema, type FormState } from "@/lib/validation";
 
-export type WishlistResult = { ok: boolean; saved: boolean; needsLogin?: boolean };
-
-export async function toggleWishlistAction(propertyId: string): Promise<WishlistResult> {
-  const user = await getCurrentUser();
-  if (!user) return { ok: false, saved: false, needsLogin: true };
-  if (typeof propertyId !== "string" || propertyId.length > 40) return { ok: false, saved: false };
-
-  const property = await prisma.property.findFirst({ where: { id: propertyId, status: "PUBLISHED" }, select: { id: true } });
-  const key = { userId_propertyId: { userId: user.id, propertyId } };
-  const existing = await prisma.wishlist.findUnique({ where: key });
-
-  if (existing) {
-    await prisma.wishlist.delete({ where: key });
-    revalidatePath("/account/wishlist");
-    return { ok: true, saved: false };
-  }
-  if (!property) return { ok: false, saved: false };
-  await prisma.wishlist.create({ data: { userId: user.id, propertyId } });
-  revalidatePath("/account/wishlist");
-  return { ok: true, saved: true };
+/**
+ * Card data for the browser wishlist. Only ids are sent by the client; anything
+ * that is not a currently published listing is simply left out.
+ */
+export async function getWishlistPropertiesAction(ids: string[]): Promise<PropertyCardData[]> {
+  if (!Array.isArray(ids)) return [];
+  const clean = [...new Set(ids.filter((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 40))].slice(0, 100);
+  if (clean.length === 0) return [];
+  const found = await prisma.property.findMany({
+    where: { id: { in: clean }, status: "PUBLISHED", owner: { status: "ACTIVE" } },
+    select: cardSelect,
+  });
+  const order = new Map(clean.map((id, index) => [id, index]));
+  return found.sort((x, y) => (order.get(x.id) ?? 0) - (order.get(y.id) ?? 0));
 }
 
 export async function contactAction(_prev: FormState, formData: FormData): Promise<FormState> {

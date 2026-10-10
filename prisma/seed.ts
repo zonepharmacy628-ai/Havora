@@ -271,6 +271,9 @@ async function main() {
   console.log(`✓ ${owners.length} demo owners and ${customers.length} demo customers (@havora.test)`);
 
   // ── Demo listings, past stays and reviews ──
+  // The six starter categories are created by the database migration.
+  const starterCategories = await prisma.category.findMany({ where: { id: { startsWith: "cat_" } }, select: { id: true } });
+  const categoryByType = new Map(starterCategories.map((c) => [c.id.replace("cat_", "").toUpperCase(), c.id]));
   const amenityByKey = new Map((await prisma.amenity.findMany()).map((a) => [a.key, a.id]));
   const today = toIso(new Date());
   let reviewIndex = 0;
@@ -285,6 +288,7 @@ async function main() {
         summary: p.summary,
         description: describe(p),
         type: p.type,
+        categoryId: categoryByType.get(p.type) ?? null,
         status: p.pending ? "PENDING_REVIEW" : "PUBLISHED",
         publishedAt: p.pending ? null : new Date(),
         featured: Boolean(p.featured),

@@ -1,7 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
 import { ArrowRight, MapPin } from "lucide-react";
-import { propertyTypeLabel } from "@/lib/constants";
 import { formatMoney } from "@/lib/money";
 import type { PropertyCardData } from "@/lib/properties";
 import { Rating } from "./ui";
@@ -9,14 +8,13 @@ import { WishlistButton } from "./wishlist-button";
 
 type Props = {
   property: PropertyCardData;
-  saved: boolean;
   /** Query string (e.g. dates and guests) carried through to the details page. */
   query?: string;
   showButton?: boolean;
   priority?: boolean;
 };
 
-export function PropertyCard({ property, saved, query = "", showButton = false, priority = false }: Props) {
+export function PropertyCard({ property, query = "", showButton = false, priority = false }: Props) {
   const href = `/properties/${property.slug}${query}`;
   const cover = property.images[0];
 
@@ -37,9 +35,9 @@ export function PropertyCard({ property, saved, query = "", showButton = false, 
           {property.featured ? (
             <span className="badge bg-gold-500 text-navy-950 shadow-sm">Featured</span>
           ) : (
-            <span className="badge bg-navy-950/55 text-white backdrop-blur-sm">{propertyTypeLabel(property.type)}</span>
+            <span className="badge bg-navy-950/55 text-white backdrop-blur-sm">{property.category?.name ?? "Stay"}</span>
           )}
-          <WishlistButton propertyId={property.id} initialSaved={saved} />
+          <WishlistButton propertyId={property.id} />
         </div>
       </div>
       <div className="flex flex-1 flex-col p-4">

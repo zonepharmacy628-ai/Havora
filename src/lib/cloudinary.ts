@@ -40,6 +40,29 @@ export function isOwnCloudinaryUrl(url: string, propertyId: string): boolean {
   );
 }
 
+/** Signature for uploading one category image (same signed-upload mechanism as listing photos). */
+export function createCategoryUploadSignature(userId: string) {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const folder = `havora/categories/${userId}`;
+  return {
+    cloudName: cloudName(),
+    apiKey: apiKey(),
+    timestamp,
+    folder,
+    signature: sign({ folder, timestamp }),
+    uploadUrl: `https://api.cloudinary.com/v1_1/${cloudName()}/image/upload`,
+  };
+}
+
+/** True if the URL is a category image this user uploaded to this project's own Cloudinary folder. */
+export function isOwnCategoryImageUrl(url: string, userId: string): boolean {
+  return (
+    cloudinaryConfigured() &&
+    url.startsWith(`https://res.cloudinary.com/${cloudName()}/image/upload/`) &&
+    url.includes(`/havora/categories/${userId}/`)
+  );
+}
+
 /** Best-effort removal of an uploaded asset. */
 export async function destroyAsset(publicId: string): Promise<void> {
   if (!cloudinaryConfigured()) return;

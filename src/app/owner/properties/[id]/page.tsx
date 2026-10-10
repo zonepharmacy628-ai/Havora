@@ -6,8 +6,9 @@ import { ActionForm, SubmitButton, TextField } from "@/components/forms";
 import { PhotoManager } from "@/components/photo-manager";
 import { PropertyForm } from "@/components/property-form";
 import { ListingBadge, Notice } from "@/components/ui";
-import { canManageProperty } from "@/lib/booking-rules";
+import { canManageProperty, HOST_ROLES } from "@/lib/booking-rules";
 import { getUnavailableRanges } from "@/lib/bookings";
+import { getCategoryFormData } from "@/lib/categories";
 import { cloudinaryConfigured } from "@/lib/cloudinary";
 import { addDays, formatDateRange, toIso, todayIn } from "@/lib/dates";
 import { prisma } from "@/lib/prisma";
@@ -51,7 +52,7 @@ function MonthView({ year, month, kindOf, today }: { year: number; month: number
 
 export default async function ManagePropertyPage({ params, searchParams }: Props) {
   const [{ id }, { created }] = await Promise.all([params, searchParams]);
-  const user = await requireRole(["OWNER", "ADMIN"], `/owner/properties/${id}`);
+  const user = await requireRole(HOST_ROLES, `/owner/properties/${id}`);
 
   const property = await prisma.property.findUnique({
     where: { id },
@@ -66,9 +67,10 @@ export default async function ManagePropertyPage({ params, searchParams }: Props
   if (!property || !canManageProperty(user, property)) notFound();
 
   const today = todayIn(property.timezone);
-  const [amenities, settings, ranges] = await Promise.all([
+  const [amenities, settings, categories, ranges] = await Promise.all([
     prisma.amenity.findMany({ orderBy: { label: "asc" } }),
     getSettings(),
+    getCategoryFormData(user),
     getUnavailableRanges(prisma, property.id, today),
   ]);
   const kindOf = (date: string) => ranges.find((range) => date >= range.start && date < range.end)?.kind ?? null;
@@ -79,11 +81,15 @@ export default async function ManagePropertyPage({ params, searchParams }: Props
   });
   const upcomingBlocks = property.blocks.filter((block) => toIso(block.endDate) > today);
   const { status } = property;
+  const isOwnListing = property.ownerId === user.id;
+  // Owners follow the listing-approval setting; an administrator publishes directly.
+  const isAdmin = user.role === "ADMIN";
+  const reviewRequired = settings.requireListingApproval && !isAdmin;
 
   return (
     <>
-      <Link href={user.role === "ADMIN" ? "/admin/properties" : "/owner/properties"} className="mb-4 inline-flex items-center gap-1.5 text-sm font-medium text-muted hover:text-gold-700">
-        <ArrowLeft className="size-4" aria-hidden="true" /> {user.role === "ADMIN" ? "All listings" : "My properties"}
+      <Link href={isOwnListing ? "/owner/properties" : "/admin/properties"} className="mb-4 inline-flex items-center gap-1.5 text-sm font-medium text-muted hover:text-gold-700">
+        <ArrowLeft className="size-4" aria-hidden="true" /> {isOwnListing ? "My properties" : "All listings"}
       </Link>
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3">
@@ -105,8 +111,11 @@ export default async function ManagePropertyPage({ params, searchParams }: Props
       <section className="card card-pad mb-8">
         <h2 className="font-serif text-lg font-medium text-ink">Publication status</h2>
         <p className="mt-1 text-sm text-muted">
-          {status === "DRAFT" && `This listing is a draft and is not visible to guests. ${settings.requireListingApproval ? "Submit it for review when it is ready." : "Publish it when it is ready."}`}
-          {status === "PENDING_REVIEW" && "Your listing is waiting for review by the HAVORA team. You can keep editing in the meantime."}
+          {status === "DRAFT" && `This listing is a draft and is not visible to guests. ${reviewRequired ? "Submit it for review when it is ready." : "Publish it when it is ready."}`}
+          {status === "PENDING_REVIEW" &&
+            (isAdmin
+              ? "This listing is waiting for review. As an administrator you can publish it now."
+              : "Your listing is waiting for review by the HAVORA team. You can keep editing in the meantime.")}
           {status === "PUBLISHED" && "Your listing is live and can be booked by guests."}
           {status === "UNLISTED" && "This listing is paused and hidden from search. Existing bookings are not affected."}
           {status === "REJECTED" && "This listing was not approved. Update it using the feedback below and resubmit."}
@@ -121,9 +130,9 @@ export default async function ManagePropertyPage({ params, searchParams }: Props
         <ActionForm action={listingStatusAction} className="mt-4" messagePosition="bottom">
           <input type="hidden" name="propertyId" value={property.id} />
           <div className="flex flex-wrap gap-2">
-            {(status === "DRAFT" || status === "REJECTED") && (
+            {(status === "DRAFT" || status === "REJECTED" || (isAdmin && status === "PENDING_REVIEW")) && (
               <SubmitButton name="intent" value="submit">
-                {settings.requireListingApproval ? (status === "REJECTED" ? "Resubmit for review" : "Submit for review") : "Publish listing"}
+                {reviewRequired ? (status === "REJECTED" ? "Resubmit for review" : "Submit for review") : "Publish listing"}
               </SubmitButton>
             )}
             {status === "PUBLISHED" && (
@@ -200,7 +209,7 @@ export default async function ManagePropertyPage({ params, searchParams }: Props
 
       {/* ───── Details ───── */}
       <h2 className="mb-4 font-serif text-xl font-medium text-ink">Listing details</h2>
-      <PropertyForm property={property} amenities={amenities} commissionRateBps={settings.commissionRateBps} />
+      <PropertyForm property={property} amenities={amenities} commissionRateBps={settings.commissionRateBps} categories={categories} isAdmin={user.role === "ADMIN"} uploadsEnabled={cloudinaryConfigured()} />
 
       {/* ───── Danger zone ───── */}
       <section className="mt-8 rounded-2xl border border-red-200 bg-white p-5 sm:p-6">

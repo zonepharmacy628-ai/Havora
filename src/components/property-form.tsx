@@ -1,7 +1,9 @@
 import type { Amenity, Property } from "@prisma/client";
 import { savePropertyAction } from "@/actions/owner";
-import { CANCELLATION_POLICIES, PROPERTY_TYPES } from "@/lib/constants";
+import type { CategoryFormData } from "@/lib/categories";
+import { CANCELLATION_POLICIES } from "@/lib/constants";
 import { centsToInput, formatBps } from "@/lib/money";
+import { CategoryField } from "./category-field";
 import { ActionForm, CheckboxField, SelectField, SubmitButton, TextAreaField, TextField } from "./forms";
 import { AmenityIcon } from "./ui";
 
@@ -9,6 +11,10 @@ type Props = {
   property?: Property & { amenities: { amenityId: string }[] };
   amenities: Amenity[];
   commissionRateBps: number;
+  categories: CategoryFormData;
+  /** Administrators create categories directly; owners can only request them. */
+  isAdmin: boolean;
+  uploadsEnabled: boolean;
 };
 
 function Section({ title, text, children }: { title: string; text: string; children: React.ReactNode }) {
@@ -23,7 +29,7 @@ function Section({ title, text, children }: { title: string; text: string; child
   );
 }
 
-export function PropertyForm({ property, amenities, commissionRateBps }: Props) {
+export function PropertyForm({ property, amenities, commissionRateBps, categories, isAdmin, uploadsEnabled }: Props) {
   const selected = new Set(property?.amenities.map((a) => a.amenityId));
   const sleeping = Array.isArray(property?.sleepingArrangements)
     ? (property.sleepingArrangements as { room: string; beds: string }[]).map((r) => `${r.room}: ${r.beds}`).join("\n")
@@ -35,13 +41,7 @@ export function PropertyForm({ property, amenities, commissionRateBps }: Props) 
 
       <Section title="The basics" text="A clear title and description help guests understand what makes your place special.">
         <TextField name="title" label="Listing title" defaultValue={property?.title} placeholder="Luxury Villa with Private Pool" maxLength={90} required className="sm:col-span-2" />
-        <SelectField name="type" label="Property type" defaultValue={property?.type ?? "VILLA"}>
-          {PROPERTY_TYPES.map((type) => (
-            <option key={type.value} value={type.value}>
-              {type.label}
-            </option>
-          ))}
-        </SelectField>
+        <CategoryField data={categories} defaultValue={property?.categoryId} isAdmin={isAdmin} uploadsEnabled={uploadsEnabled} />
         <TextField name="summary" label="Short summary" defaultValue={property?.summary} placeholder="One sentence shown in search results" maxLength={160} required className="sm:col-span-2" />
         <TextAreaField name="description" label="Full description" defaultValue={property?.description} rows={7} maxLength={5000} required hint="At least 80 characters. Separate paragraphs with a blank line." className="sm:col-span-2" />
       </Section>

@@ -1,18 +1,32 @@
 import { describe, expect, it } from "vitest";
 import {
+  addDeviceBooking,
+  bookingAccessKey,
+  normaliseReference,
+  parseDeviceBookings,
+  publicGuestName,
+  serialiseDeviceBookings,
+  verifyBookingAccessKey,
+} from "@/lib/booking-access";
+import {
   bookingActorFor,
+  canApproveListing,
   canManageProperty,
+  isAdmin,
   canTransition,
   canViewBooking,
   customerCancellation,
   freeCancellationDeadline,
+  HOST_ROLES,
   validateStay,
 } from "@/lib/booking-rules";
 import { addDays, isIsoDate, nightsBetween, rangesOverlap, todayIn } from "@/lib/dates";
 import { applyBps, formatMoney, parseMoneyToCents } from "@/lib/money";
+import { normaliseAdminEmail } from "@/lib/admin-bootstrap";
 import { calculateQuote } from "@/lib/pricing";
 import { settingsFromRows } from "@/lib/settings-core";
-import { bookingSchema, propertySchema, registerSchema } from "@/lib/validation";
+import { bookingLookupSchema, bookingSchema, categorySchema, ownerRegisterSchema, propertySchema } from "@/lib/validation";
+import { canReviewCategories, categorySlug, initialCategoryStatus, isSelectableCategory, normaliseCategoryName } from "@/lib/category-rules";
 
 describe("pricing", () => {
   it("calculates a quote in integer cents", () => {
@@ -180,12 +194,16 @@ describe("permissions", () => {
 });
 
 describe("input validation", () => {
-  it("never lets a role other than customer/owner be chosen at sign-up", () => {
+  it("never lets a role be chosen at sign-up", () => {
     const base = { name: "Jane Doe", email: "jane@example.com", password: "long-enough-pw", terms: "on" };
-    expect(registerSchema.safeParse({ ...base, accountType: "OWNER" }).success).toBe(true);
-    expect(registerSchema.safeParse({ ...base, accountType: "ADMIN" }).success).toBe(false);
-    expect(registerSchema.safeParse({ ...base, accountType: "CUSTOMER", password: "short" }).success).toBe(false);
-    expect(registerSchema.safeParse({ ...base, accountType: "CUSTOMER", terms: undefined }).success).toBe(false);
+    // Host registration has no role field at all: anything a client adds is discarded.
+    const parsed = ownerRegisterSchema.parse({ ...base, role: "ADMIN", accountType: "ADMIN" });
+    expect(parsed).not.toHaveProperty("role");
+    expect(parsed).not.toHaveProperty("accountType");
+    expect(Object.keys(parsed).sort()).toEqual(["email", "name", "password", "terms"]);
+    expect(ownerRegisterSchema.safeParse({ ...base, password: "short" }).success).toBe(false);
+    expect(ownerRegisterSchema.safeParse({ ...base, terms: undefined }).success).toBe(false);
+    expect(ownerRegisterSchema.safeParse({ ...base, email: "not-an-email" }).success).toBe(false);
   });
 
   it("ignores client-supplied prices on bookings", () => {
@@ -199,6 +217,7 @@ describe("input validation", () => {
       contactName: "Jane Doe",
       contactEmail: "JANE@example.com ",
       contactPhone: "+44 20 7946 0958",
+      idempotencyKey: "abcDEF123456_-abcDEF1234",
       totalCents: "1",
       nightlyPriceCents: "1",
     });
@@ -213,7 +232,7 @@ describe("input validation", () => {
       title: "Luxury Villa with Private Pool",
       summary: "A serene villa with a private pool and open-air living.",
       description: "x".repeat(120),
-      type: "VILLA",
+      categoryId: "cat_villa",
       addressLine: "Jalan Raya 12",
       city: "Bali",
       country: "Indonesia",
@@ -240,6 +259,202 @@ describe("input validation", () => {
     expect(propertySchema.safeParse({ ...valid, timezone: "Mars/Olympus" }).success).toBe(false);
     expect(propertySchema.safeParse({ ...valid, nightlyPrice: "-10" }).success).toBe(false);
     expect(propertySchema.safeParse({ ...valid, minNights: "10", maxNights: "5" }).success).toBe(false);
+  });
+});
+
+describe("guest checkout validation", () => {
+  const guest = {
+    propertyId: "prop_1",
+    checkIn: "2026-10-20",
+    checkOut: "2026-10-25",
+    adults: "2",
+    children: "0",
+    paymentMethod: "PAY_AT_PROPERTY",
+    contactName: "Jane Doe",
+    contactEmail: "jane@example.com",
+    contactPhone: "+44 20 7946 0958",
+    idempotencyKey: "abcDEF123456_-abcDEF1234",
+  };
+
+  it("accepts complete guest details", () => expect(bookingSchema.safeParse(guest).success).toBe(true));
+
+  it("requires a valid name, email and phone", () => {
+    expect(bookingSchema.safeParse({ ...guest, contactName: "" }).success).toBe(false);
+    expect(bookingSchema.safeParse({ ...guest, contactEmail: "jane@" }).success).toBe(false);
+    expect(bookingSchema.safeParse({ ...guest, contactPhone: "12" }).success).toBe(false);
+    expect(bookingSchema.safeParse({ ...guest, contactPhone: undefined }).success).toBe(false);
+  });
+
+  it("requires a well-formed idempotency key", () => {
+    expect(bookingSchema.safeParse({ ...guest, idempotencyKey: undefined }).success).toBe(false);
+    expect(bookingSchema.safeParse({ ...guest, idempotencyKey: "short" }).success).toBe(false);
+    expect(bookingSchema.safeParse({ ...guest, idempotencyKey: "has spaces and symbols!!" }).success).toBe(false);
+  });
+
+  it("validates the booking lookup form", () => {
+    expect(bookingLookupSchema.safeParse({ reference: "HV-AB23CD45", email: "Jane@Example.com" }).success).toBe(true);
+    expect(bookingLookupSchema.parse({ reference: "HV-AB23CD45", email: " Jane@Example.com " }).email).toBe("jane@example.com");
+    expect(bookingLookupSchema.safeParse({ reference: "", email: "jane@example.com" }).success).toBe(false);
+    expect(bookingLookupSchema.safeParse({ reference: "HV-AB23CD45", email: "nope" }).success).toBe(false);
+  });
+});
+
+describe("private booking access", () => {
+  const secret = "test-secret-with-enough-length-0123456789";
+  const key = bookingAccessKey(secret, "booking_1", 1);
+
+  it("produces a long, URL-safe key", () => {
+    expect(key).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(bookingAccessKey(secret, "booking_1", 1)).toBe(key);
+  });
+
+  it("accepts only the exact key for that booking and version", () => {
+    expect(verifyBookingAccessKey(secret, "booking_1", 1, key)).toBe(true);
+    expect(verifyBookingAccessKey(secret, "booking_2", 1, key)).toBe(false);
+    expect(verifyBookingAccessKey("another-secret-with-enough-length-000", "booking_1", 1, key)).toBe(false);
+    expect(verifyBookingAccessKey(secret, "booking_1", 1, key.slice(0, -1) + (key.endsWith("A") ? "B" : "A"))).toBe(false);
+  });
+
+  it("is revoked when the access version changes", () => {
+    expect(verifyBookingAccessKey(secret, "booking_1", 2, key)).toBe(false);
+  });
+
+  it("never treats a booking reference, empty value or junk as a key", () => {
+    for (const bad of ["HV-AB23CD45", "", undefined, null, 42, "x".repeat(500), {}]) {
+      expect(verifyBookingAccessKey(secret, "booking_1", 1, bad)).toBe(false);
+    }
+  });
+
+  it("refuses to sign with a missing or weak secret", () => {
+    expect(() => bookingAccessKey("", "booking_1", 1)).toThrow();
+    expect(() => bookingAccessKey("short", "booking_1", 1)).toThrow();
+  });
+
+  it("normalises references and rejects malformed ones", () => {
+    expect(normaliseReference("hv-ab23cd45")).toBe("HV-AB23CD45");
+    expect(normaliseReference(" AB23CD45 ")).toBe("HV-AB23CD45");
+    expect(normaliseReference("HVAB23CD45")).toBe("HV-AB23CD45");
+    expect(normaliseReference("HV-AB23")).toBeNull();
+    expect(normaliseReference("HV-AB23CD4O")).toBeNull();
+    expect(normaliseReference("../../etc/passwd")).toBeNull();
+    expect(normaliseReference(undefined)).toBeNull();
+  });
+
+  it("round-trips the device cookie and ignores malformed entries", () => {
+    const entries = addDeviceBooking([], { reference: "HV-AB23CD45", key });
+    const again = addDeviceBooking(entries, { reference: "HV-ZZ99YY88", key });
+    expect(again.map((e) => e.reference)).toEqual(["HV-ZZ99YY88", "HV-AB23CD45"]);
+    expect(parseDeviceBookings(serialiseDeviceBookings(again))).toEqual(again);
+    expect(addDeviceBooking(again, { reference: "HV-AB23CD45", key })).toHaveLength(2);
+    expect(parseDeviceBookings("garbage,HV-AB23CD45,HV-AB23CD45.short,<script>.x")).toEqual([]);
+    expect(parseDeviceBookings(undefined)).toEqual([]);
+    const many = Array.from({ length: 30 }, (_, i) => `HV-AAAAAA${String.fromCharCode(65 + (i % 20))}${2 + (i % 8)}.${key}`).join(",");
+    expect(parseDeviceBookings(many).length).toBeLessThanOrEqual(12);
+  });
+
+  it("shows guests publicly as first name and last initial only", () => {
+    expect(publicGuestName("Jane Doe")).toBe("Jane D.");
+    expect(publicGuestName("  maria   del carmen   garcia ")).toBe("maria G.");
+    expect(publicGuestName("Cher")).toBe("Cher");
+    expect(publicGuestName("")).toBe("Guest");
+    expect(publicGuestName("Jane Doe")).not.toContain("Doe");
+  });
+});
+
+describe("listing approval authority", () => {
+  const adminA = { id: "admin-a", role: "ADMIN" as const };
+  const owner = { id: "owner-1", role: "OWNER" as const };
+
+  it("lets an administrator approve any listing, including their own", () => {
+    expect(canApproveListing(adminA)).toBe(true);
+    // Ownership is irrelevant for an administrator: they manage their own and everyone else's.
+    expect(canManageProperty(adminA, { ownerId: "admin-a" })).toBe(true);
+    expect(canManageProperty(adminA, { ownerId: "owner-1" })).toBe(true);
+  });
+
+  it("never lets owners or customers approve listings — not even their own", () => {
+    expect(canApproveListing(owner)).toBe(false);
+    expect(canApproveListing({ id: "c", role: "CUSTOMER" })).toBe(false);
+  });
+
+  it("does not give owners admin powers over other people's listings", () => {
+    expect(canManageProperty(owner, { ownerId: "owner-1" })).toBe(true);
+    expect(canManageProperty(owner, { ownerId: "admin-a" })).toBe(false);
+    expect(canManageProperty(owner, { ownerId: "owner-2" })).toBe(false);
+    expect(isAdmin(owner)).toBe(false);
+  });
+
+  it("lets administrators manage their own listings like any host", () => {
+    expect(HOST_ROLES).toEqual(["OWNER", "ADMIN"]);
+    expect(canManageProperty(adminA, { ownerId: "admin-a" })).toBe(true);
+  });
+
+  it("treats guest bookings (no account) as visible only to the host and admins by session", () => {
+    const guestBooking = { customerId: null, property: { ownerId: "owner-1" } };
+    expect(bookingActorFor(owner, guestBooking)).toBe("OWNER");
+    expect(bookingActorFor(adminA, guestBooking)).toBe("ADMIN");
+    expect(bookingActorFor({ id: "cust-9", role: "CUSTOMER" }, guestBooking)).toBeNull();
+    expect(canViewBooking({ id: "owner-2", role: "OWNER" }, guestBooking)).toBe(false);
+  });
+});
+
+describe("property categories", () => {
+  it("lets an administrator create a live category and an owner only request one", () => {
+    expect(initialCategoryStatus("ADMIN")).toBe("ACTIVE");
+    expect(initialCategoryStatus("OWNER")).toBe("PENDING");
+    expect(initialCategoryStatus("CUSTOMER")).toBeNull();
+  });
+
+  it("lets only administrators approve or reject requests", () => {
+    expect(canReviewCategories("ADMIN")).toBe(true);
+    expect(canReviewCategories("OWNER")).toBe(false);
+    expect(canReviewCategories("CUSTOMER")).toBe(false);
+  });
+
+  it("only allows live categories on a listing", () => {
+    expect(isSelectableCategory({ status: "ACTIVE" })).toBe(true);
+    expect(isSelectableCategory({ status: "PENDING" })).toBe(false);
+    expect(isSelectableCategory({ status: "REJECTED" })).toBe(false);
+    expect(isSelectableCategory(null)).toBe(false);
+  });
+
+  it("builds slugs that make differently typed names collide", () => {
+    expect(categorySlug("Tree House")).toBe("tree-house");
+    expect(categorySlug("  tree   HOUSE ")).toBe("tree-house");
+    expect(categorySlug("Tree-House!")).toBe("tree-house");
+    expect(categorySlug("Château")).toBe("chateau");
+    expect(categorySlug("***")).toBe("");
+    expect(normaliseCategoryName("  Tree    House ")).toBe("Tree House");
+  });
+
+  it("validates the category form", () => {
+    expect(categorySchema.safeParse({ name: "Tree House" }).success).toBe(true);
+    expect(categorySchema.safeParse({ name: "Bed & Breakfast", description: "Small hosted stays." }).success).toBe(true);
+    expect(categorySchema.safeParse({ name: "" }).success).toBe(false);
+    expect(categorySchema.safeParse({ name: "A" }).success).toBe(false);
+    expect(categorySchema.safeParse({ name: "x".repeat(41) }).success).toBe(false);
+    expect(categorySchema.safeParse({ name: "<script>alert(1)</script>" }).success).toBe(false);
+    expect(categorySchema.safeParse({ name: "Tree House", description: "x".repeat(201) }).success).toBe(false);
+    // Extra fields such as a status or owner are never accepted from the form.
+    const parsed = categorySchema.parse({ name: "Tree House", status: "ACTIVE", requestedById: "someone" });
+    expect(parsed).not.toHaveProperty("status");
+    expect(parsed).not.toHaveProperty("requestedById");
+  });
+
+  it("requires a category on a listing", () => {
+    expect(propertySchema.safeParse({ categoryId: "" }).error?.issues.some((issue) => issue.path[0] === "categoryId")).toBe(true);
+  });
+});
+
+describe("administrator email setting", () => {
+  it("normalises a valid address and rejects anything else", () => {
+    expect(normaliseAdminEmail("  Owner@Example.COM ")).toBe("owner@example.com");
+    expect(normaliseAdminEmail("")).toBeNull();
+    expect(normaliseAdminEmail(undefined)).toBeNull();
+    expect(normaliseAdminEmail("not-an-email")).toBe("");
+    // Exactly one address: lists are refused, so the setting can never promote several accounts.
+    expect(normaliseAdminEmail("a@example.com,b@example.com")).toBe("");
+    expect(normaliseAdminEmail("a@example.com b@example.com")).toBe("");
   });
 });
 

@@ -1,54 +1,96 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { after } from "next/server";
 import { revalidatePath } from "next/cache";
 import type { BookingStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { safely, TOO_MANY } from "@/lib/action-utils";
-import { bookingActorFor, customerCancellation } from "@/lib/booking-rules";
-import { createBooking, transitionBooking } from "@/lib/bookings";
+import { normaliseReference, publicGuestName } from "@/lib/booking-access";
+import { customerCancellation } from "@/lib/booking-rules";
+import { assertWithinBookingCap, createBooking, transitionBooking } from "@/lib/bookings";
 import { toIso, todayIn } from "@/lib/dates";
-import { rateLimit } from "@/lib/rate-limit";
+import { emailConfigured } from "@/lib/email";
+import { isValidAccessKey, rememberDeviceBooking, resolveBookingAccess } from "@/lib/guest-access";
+import { notifyBookingCreated, notifyBookingStatusChanged, sendBookingAccessLink } from "@/lib/notifications";
+import { rateLimit, rateLimitByIp } from "@/lib/rate-limit";
 import { refreshRating } from "@/lib/reviews";
-import { assertUser, AuthorizationError } from "@/lib/session";
-import { bookingSchema, formToObject, invalid, parseLines, reasonSchema, reviewSchema, type FormState } from "@/lib/validation";
+import { AuthorizationError, getCurrentUser } from "@/lib/session";
+import {
+  bookingLookupSchema,
+  bookingSchema,
+  formToObject,
+  invalid,
+  parseLines,
+  reasonSchema,
+  reviewSchema,
+  type FormState,
+} from "@/lib/validation";
 
+/**
+ * Guest checkout. No account is needed: the booking is tied to the contact
+ * details entered here and to a private access key remembered by this browser.
+ * A signed-in user (host, admin or legacy customer) has the booking linked to
+ * their account as well.
+ */
 export async function createBookingAction(_prev: FormState, formData: FormData): Promise<FormState> {
   return safely(async () => {
-    const user = await assertUser();
+    // Honeypot: real visitors never see or fill this field.
+    if (formData.get("company")) return { ok: false, message: "Something went wrong on our side. Please try again." };
+
     const parsed = bookingSchema.safeParse(formToObject(formData));
     if (!parsed.success) return invalid(parsed.error);
-    if (!(await rateLimit(`booking:${user.id}`, 10, 3600))) return TOO_MANY;
-
     const { additionalGuests, ...data } = parsed.data;
+
+    // Abuse limits: per connection and per email address.
+    if (!(await rateLimitByIp("booking-hour", 6, 3600)) || !(await rateLimitByIp("booking-day", 15, 86_400))) return TOO_MANY;
+    if (!(await rateLimit(`booking-email:${data.contactEmail}`, 6, 86_400))) return TOO_MANY;
+
+    const user = await getCurrentUser();
+    const existing = await prisma.booking.findUnique({ where: { idempotencyKey: data.idempotencyKey }, select: { id: true } });
+    if (!existing) await assertWithinBookingCap(prisma, data.contactEmail);
+
     const booking = await createBooking(prisma, {
       ...data,
-      customerId: user.id,
+      customerId: user?.id ?? null,
       additionalGuests: parseLines(additionalGuests, 29),
     });
 
+    await rememberDeviceBooking(booking);
+    // Only a brand-new booking sends email; a retried submission does not send it twice.
+    // The booking is already saved at this point: an email problem never undoes it.
+    const mail = existing ? null : await notifyBookingCreated(booking);
+    if (mail === "failed") {
+      await prisma.auditLog.create({
+        data: { actorId: null, action: "email.failed", entityType: "Booking", entityId: booking.id, metadata: { reference: booking.reference, kind: "booking confirmation" } },
+      });
+    }
+
     revalidatePath("/", "layout");
-    redirect(`/booking/${booking.reference}?new=1`);
+    // The confirmation page states what really happened to the email (sent / failed / off).
+    redirect(`/booking/${booking.reference}?new=1${mail ? `&mail=${mail}` : ""}`);
   });
 }
 
-/** Loads a booking the current user is allowed to act on, with their role for it. */
+/**
+ * Loads a booking the current visitor may act on, with the role they hold for
+ * it. "Missing" and "not yours" are indistinguishable so ids cannot be probed.
+ */
 async function loadBookingForAction(bookingId: unknown) {
-  const user = await assertUser();
-  if (typeof bookingId !== "string" || !bookingId) throw new AuthorizationError("Booking not found.");
+  if (typeof bookingId !== "string" || !bookingId || bookingId.length > 40) throw new AuthorizationError("Booking not found.");
   const booking = await prisma.booking.findUnique({
     where: { id: bookingId },
-    include: { property: { select: { ownerId: true, timezone: true } }, payments: true },
+    include: { property: { select: { ownerId: true, timezone: true } }, payments: true, review: { select: { id: true } } },
   });
-  const actor = booking ? bookingActorFor(user, booking) : null;
-  // Same message for "missing" and "not yours" so booking ids cannot be probed.
-  if (!booking || !actor) throw new AuthorizationError("Booking not found.");
-  return { user, booking, actor, today: todayIn(booking.property.timezone) };
+  const access = booking ? await resolveBookingAccess(booking) : null;
+  if (!booking || !access) throw new AuthorizationError("Booking not found.");
+  return { ...access, booking, today: todayIn(booking.property.timezone) };
 }
 
 export async function cancelBookingAction(_prev: FormState, formData: FormData): Promise<FormState> {
   return safely(async () => {
     const { user, booking, actor, today } = await loadBookingForAction(formData.get("bookingId"));
+    if (!(await rateLimitByIp("booking-manage", 30, 3600))) return TOO_MANY;
     const parsed = reasonSchema.safeParse(formToObject(formData));
     if (!parsed.success) return invalid(parsed.error);
     const reason = parsed.data.reason;
@@ -63,7 +105,8 @@ export async function cancelBookingAction(_prev: FormState, formData: FormData):
       if (option.kind === "request") to = "CANCELLATION_REQUESTED";
     }
 
-    await transitionBooking(prisma, { bookingId: booking.id, to, actor, actorId: user.id, reason });
+    const updated = await transitionBooking(prisma, { bookingId: booking.id, to, actor, actorId: user?.id ?? null, reason });
+    await notifyBookingStatusChanged(updated, actor === "CUSTOMER" ? "GUEST" : "HOST");
     revalidatePath("/", "layout");
     return {
       ok: true,
@@ -88,7 +131,7 @@ const DECISIONS: Record<string, { from: BookingStatus[]; to: BookingStatus; done
 export async function bookingDecisionAction(_prev: FormState, formData: FormData): Promise<FormState> {
   return safely(async () => {
     const { user, booking, actor, today } = await loadBookingForAction(formData.get("bookingId"));
-    if (actor === "CUSTOMER") throw new AuthorizationError();
+    if (actor === "CUSTOMER" || !user) throw new AuthorizationError();
 
     const decision = DECISIONS[String(formData.get("decision"))];
     if (!decision || !decision.from.includes(booking.status)) {
@@ -102,13 +145,14 @@ export async function bookingDecisionAction(_prev: FormState, formData: FormData
     }
 
     const parsed = reasonSchema.safeParse(formToObject(formData));
-    await transitionBooking(prisma, {
+    const updated = await transitionBooking(prisma, {
       bookingId: booking.id,
       to: decision.to,
       actor,
       actorId: user.id,
       reason: parsed.success ? parsed.data.reason : undefined,
     });
+    if (decision.to !== "COMPLETED" && decision.to !== "NO_SHOW") await notifyBookingStatusChanged(updated, "HOST");
     revalidatePath("/", "layout");
     return { ok: true, message: decision.done };
   });
@@ -121,7 +165,7 @@ export async function bookingDecisionAction(_prev: FormState, formData: FormData
 export async function recordPaymentAction(_prev: FormState, formData: FormData): Promise<FormState> {
   return safely(async () => {
     const { user, booking, actor, today } = await loadBookingForAction(formData.get("bookingId"));
-    if (actor === "CUSTOMER") throw new AuthorizationError();
+    if (actor === "CUSTOMER" || !user) throw new AuthorizationError();
 
     const payment = booking.payments.find((p) => p.status === "UNPAID" && p.method === "PAY_AT_PROPERTY");
     if (!payment) return { ok: false, message: "There is no outstanding payment for this booking." };
@@ -152,26 +196,141 @@ export async function recordPaymentAction(_prev: FormState, formData: FormData):
   });
 }
 
+/**
+ * Reviews come only from the person who made the booking (guest key or linked
+ * account), only for completed stays, and only once per stay.
+ */
 export async function submitReviewAction(_prev: FormState, formData: FormData): Promise<FormState> {
   return safely(async () => {
-    const user = await assertUser();
     const parsed = reviewSchema.safeParse(formToObject(formData));
     if (!parsed.success) return invalid(parsed.error);
     const { bookingId, rating, comment } = parsed.data;
 
-    const booking = await prisma.booking.findUnique({
-      where: { id: bookingId },
-      select: { id: true, customerId: true, propertyId: true, status: true, review: { select: { id: true } } },
-    });
-    if (!booking || booking.customerId !== user.id) throw new AuthorizationError("Booking not found.");
+    const { user, booking, actor } = await loadBookingForAction(bookingId);
+    if (actor !== "CUSTOMER") throw new AuthorizationError("Only the guest who stayed can review this booking.");
+    if (!(await rateLimitByIp("review", 10, 3600))) return TOO_MANY;
     if (booking.status !== "COMPLETED") return { ok: false, message: "You can review a stay once it has been completed." };
-    if (booking.review) return { ok: false, message: "You have already reviewed this stay." };
+    if (booking.review) return { ok: false, message: "This stay has already been reviewed." };
 
-    await prisma.$transaction(async (tx) => {
-      await tx.review.create({ data: { bookingId, propertyId: booking.propertyId, authorId: user.id, rating, comment } });
-      await refreshRating(tx, booking.propertyId);
-    });
+    // Linked to the account only when the reviewer is that account holder; guests are stored by display name.
+    const linkedAuthorId = user && booking.customerId === user.id ? user.id : null;
+    try {
+      await prisma.$transaction(async (tx) => {
+        await tx.review.create({
+          data: {
+            bookingId,
+            propertyId: booking.propertyId,
+            authorId: linkedAuthorId,
+            authorName: publicGuestName(booking.contactName),
+            rating,
+            comment,
+          },
+        });
+        await refreshRating(tx, booking.propertyId);
+      });
+    } catch (error) {
+      // The unique index on Review.bookingId is the final guard against duplicates.
+      if ((error as { code?: string }).code === "P2002") return { ok: false, message: "This stay has already been reviewed." };
+      throw error;
+    }
     revalidatePath("/", "layout");
     return { ok: true, message: "Thank you — your review has been published." };
+  });
+}
+
+const LOOKUP_REPLY: FormState = {
+  ok: true,
+  message: "If those details match a booking, a private link is being sent to that address. Please check your inbox (and spam folder). If nothing arrives within a few minutes, contact our support team.",
+};
+
+/**
+ * "Find my booking": never reveals whether a reference or email exists and
+ * never grants access directly — it only emails a private link to the address
+ * already stored on the booking.
+ */
+export async function requestBookingLinkAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  return safely(async () => {
+    const parsed = bookingLookupSchema.safeParse(formToObject(formData));
+    if (!parsed.success) return invalid(parsed.error);
+    const reference = normaliseReference(parsed.data.reference);
+
+    // Whether email works at all is not information about any booking, so it is safe to say so.
+    if (!emailConfigured()) {
+      return { ok: false, message: "We can't email booking links at the moment. Please contact our support team with your booking reference." };
+    }
+    if (!(await rateLimitByIp("booking-lookup", 6, 900))) return TOO_MANY;
+    if (reference && !(await rateLimit(`booking-lookup-ref:${reference}`, 5, 3600))) return LOOKUP_REPLY;
+    if (!(await rateLimit(`booking-lookup-email:${parsed.data.email}`, 5, 3600))) return LOOKUP_REPLY;
+
+    if (reference) {
+      const booking = await prisma.booking.findUnique({ where: { reference } });
+      if (booking && booking.contactEmail === parsed.data.email) {
+        // Sent after the reply has gone out, so a matching reference + email does not
+        // take measurably longer to answer than a non-matching one.
+        after(async () => {
+          const result = await sendBookingAccessLink(booking);
+          if (result !== "sent") {
+            await prisma.auditLog
+              .create({
+                data: { actorId: null, action: "email.failed", entityType: "Booking", entityId: booking.id, metadata: { reference: booking.reference, kind: "booking link recovery" } },
+              })
+              .catch((error) => console.error("[booking] could not record a failed recovery email", error));
+          }
+        });
+      }
+    }
+    return LOOKUP_REPLY;
+  });
+}
+
+export type OpenBookingResult = { ok: true; reference: string } | { ok: false };
+
+/**
+ * Exchanges a private link (reference + key from the URL fragment) for an
+ * HttpOnly cookie on this device. Wrong keys and unknown references look identical.
+ */
+export async function openBookingAction(reference: string, key: string): Promise<OpenBookingResult> {
+  try {
+    if (!(await rateLimitByIp("booking-open", 20, 900))) return { ok: false };
+    const normalised = normaliseReference(reference);
+    if (!normalised || typeof key !== "string") return { ok: false };
+    const booking = await prisma.booking.findUnique({ where: { reference: normalised }, select: { id: true, reference: true, accessVersion: true } });
+    if (!booking || !isValidAccessKey(booking, key)) return { ok: false };
+    await rememberDeviceBooking(booking);
+    return { ok: true, reference: booking.reference };
+  } catch (error) {
+    console.error("[booking] open link failed", error);
+    return { ok: false };
+  }
+}
+
+/**
+ * Administrator-only: revokes every private link issued for a booking (for
+ * example if a guest reports that theirs was shared) and emails a new one to
+ * the address on the booking.
+ */
+export async function resetBookingLinkAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  return safely(async () => {
+    const { user, booking, actor } = await loadBookingForAction(formData.get("bookingId"));
+    if (actor !== "ADMIN" || !user) throw new AuthorizationError();
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const next = await tx.booking.update({ where: { id: booking.id }, data: { accessVersion: { increment: 1 } } });
+      await tx.auditLog.create({
+        data: { actorId: user.id, action: "booking.link_reset", entityType: "Booking", entityId: booking.id, metadata: { reference: booking.reference } },
+      });
+      return next;
+    });
+    const result = await sendBookingAccessLink(updated);
+    revalidatePath("/", "layout");
+    return result === "sent"
+      ? { ok: true, message: "Previous private links no longer work. A new link has been emailed to the guest." }
+      : {
+          ok: false,
+          message:
+            result === "off"
+              ? "Previous private links no longer work, but email is not configured, so NO new link was sent. The guest cannot open this booking until a link reaches them."
+              : "Previous private links no longer work, but the email with the new link FAILED to send. Try again, or contact the guest directly.",
+        };
   });
 }

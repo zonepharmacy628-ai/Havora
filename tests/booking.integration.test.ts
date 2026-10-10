@@ -1,6 +1,18 @@
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { BookingError, createBooking, findConflict, generateBookingReference, transitionBooking, type CreateBookingInput } from "@/lib/bookings";
+import { bookingAccessKey, publicGuestName, verifyBookingAccessKey } from "@/lib/booking-access";
+import {
+  assertWithinBookingCap,
+  BookingError,
+  createBooking,
+  findConflict,
+  generateBookingReference,
+  MAX_ACTIVE_BOOKINGS_PER_EMAIL,
+  newIdempotencyKey,
+  transitionBooking,
+  type CreateBookingInput,
+} from "@/lib/bookings";
+import { ensureAdmin } from "@/lib/admin-bootstrap";
 import { addDays, parseDate, todayIn } from "@/lib/dates";
 import { TEST_DATABASE_URL } from "./global-setup";
 
@@ -260,5 +272,219 @@ describe("booking lifecycle", () => {
     await expect(prisma.payment.update({ where: { id: payment.id }, data: { status: "PAID" } })).rejects.toThrow();
     await reconnect();
     expect((await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } })).status).toBe("UNPAID");
+  });
+});
+
+describe("guest checkout (no account)", () => {
+  const guest = (overrides: Partial<CreateBookingInput> = {}): CreateBookingInput =>
+    stay({ customerId: null, contactName: "Greta Guest", contactEmail: "greta@example.test", idempotencyKey: newIdempotencyKey(), ...overrides });
+
+  it("creates a booking with no customer account, a server-side price and an UNPAID payment", async () => {
+    const booking = await createBooking(prisma, guest({ checkIn: day(110), checkOut: day(113) }));
+    expect(booking.customerId).toBeNull();
+    expect(booking.status).toBe("CONFIRMED");
+    expect(booking.contactEmail).toBe("greta@example.test");
+    expect(booking.totalCents).toBe(20_000 * 3 + 5_000 + 3_000);
+    expect(booking.accessVersion).toBe(1);
+    const payment = await prisma.payment.findFirstOrThrow({ where: { bookingId: booking.id } });
+    expect(payment).toMatchObject({ method: "PAY_AT_PROPERTY", status: "UNPAID", paidAt: null });
+    const log = await prisma.auditLog.findFirstOrThrow({ where: { entityId: booking.id, action: "booking.created" } });
+    expect(log.actorId).toBeNull();
+  });
+
+  it("still blocks overlapping dates for guests", async () => {
+    await expect(createBooking(prisma, guest({ contactEmail: "other-guest@example.test", checkIn: day(111), checkOut: day(114) }))).rejects.toThrow(/no longer available/);
+  });
+
+  it("returns the same booking when the same checkout is submitted twice", async () => {
+    const input = guest({ checkIn: day(120), checkOut: day(123) });
+    const first = await createBooking(prisma, input);
+    const retry = await createBooking(prisma, input);
+    expect(retry.id).toBe(first.id);
+    expect(retry.reference).toBe(first.reference);
+    expect(await prisma.booking.count({ where: { idempotencyKey: input.idempotencyKey } })).toBe(1);
+    expect(await prisma.payment.count({ where: { bookingId: first.id } })).toBe(1);
+  });
+
+  it("creates exactly one booking when the same checkout is submitted simultaneously", async () => {
+    const input = guest({ checkIn: day(130), checkOut: day(133) });
+    const results = await Promise.all([createBooking(prisma, input), createBooking(prisma, input)]);
+    expect(results[0].id).toBe(results[1].id);
+    expect(await prisma.booking.count({ where: { idempotencyKey: input.idempotencyKey } })).toBe(1);
+  });
+
+  it("does not let a different request reuse someone else's idempotency key", async () => {
+    const input = guest({ checkIn: day(140), checkOut: day(143) });
+    await createBooking(prisma, input);
+    await expect(createBooking(prisma, { ...input, contactEmail: "attacker@example.test" })).rejects.toThrow(/expired/);
+    await expect(createBooking(prisma, { ...input, checkIn: day(150), checkOut: day(153) })).rejects.toThrow(/expired/);
+  });
+
+  it("caps the number of upcoming bookings per email address", async () => {
+    const email = "capped@example.test";
+    for (let i = 0; i < MAX_ACTIVE_BOOKINGS_PER_EMAIL; i++) {
+      await assertWithinBookingCap(prisma, email);
+      await createBooking(prisma, guest({ propertyId: requestPropertyId, contactEmail: email, checkIn: day(160 + i * 4), checkOut: day(162 + i * 4) }));
+    }
+    await expect(assertWithinBookingCap(prisma, email)).rejects.toThrow(BookingError);
+    // Cancelled bookings no longer count towards the cap.
+    const one = await prisma.booking.findFirstOrThrow({ where: { contactEmail: email } });
+    await transitionBooking(prisma, { bookingId: one.id, to: "CANCELLED", actor: "CUSTOMER", actorId: null });
+    await expect(assertWithinBookingCap(prisma, email)).resolves.toBeUndefined();
+  });
+
+  it("issues an access key that is specific to the booking and can be revoked", async () => {
+    const secret = "integration-secret-0123456789abcdef";
+    const a = await createBooking(prisma, guest({ contactEmail: "key-a@example.test", checkIn: day(190), checkOut: day(192) }));
+    const b = await createBooking(prisma, guest({ contactEmail: "key-b@example.test", checkIn: day(193), checkOut: day(195) }));
+    const keyA = bookingAccessKey(secret, a.id, a.accessVersion);
+    expect(verifyBookingAccessKey(secret, a.id, a.accessVersion, keyA)).toBe(true);
+    expect(verifyBookingAccessKey(secret, b.id, b.accessVersion, keyA)).toBe(false);
+    expect(verifyBookingAccessKey(secret, a.id, a.accessVersion, a.reference)).toBe(false);
+    const revoked = await prisma.booking.update({ where: { id: a.id }, data: { accessVersion: { increment: 1 } } });
+    expect(verifyBookingAccessKey(secret, revoked.id, revoked.accessVersion, keyA)).toBe(false);
+  });
+
+  it("lets a guest cancel under the same state machine as account bookings", async () => {
+    const booking = await createBooking(prisma, guest({ contactEmail: "cancel@example.test", checkIn: day(200), checkOut: day(203) }));
+    const cancelled = await transitionBooking(prisma, { bookingId: booking.id, to: "CANCELLED", actor: "CUSTOMER", actorId: null, reason: "Plans changed" });
+    expect(cancelled.status).toBe("CANCELLED");
+    expect((await prisma.payment.findFirstOrThrow({ where: { bookingId: booking.id } })).status).toBe("VOID");
+    await expect(transitionBooking(prisma, { bookingId: booking.id, to: "CONFIRMED", actor: "CUSTOMER", actorId: null })).rejects.toThrow(BookingError);
+  });
+});
+
+describe("guest reviews and legacy compatibility", () => {
+  it("stores a guest review without an account, once per stay, with a public-safe name", async () => {
+    const booking = await createBooking(
+      prisma,
+      stay({ customerId: null, contactName: "Rowan Reviewer", contactEmail: "rowan@example.test", idempotencyKey: newIdempotencyKey(), checkIn: day(210), checkOut: day(212) }),
+    );
+    await prisma.booking.update({ where: { id: booking.id }, data: { status: "COMPLETED" } });
+
+    const review = await prisma.review.create({
+      data: { bookingId: booking.id, propertyId: booking.propertyId, authorId: null, authorName: publicGuestName(booking.contactName), rating: 5, comment: "A wonderful, quiet stay." },
+    });
+    expect(review.authorId).toBeNull();
+    expect(review.authorName).toBe("Rowan R.");
+
+    // The unique index on bookingId makes a second review for the same stay impossible.
+    await expect(
+      prisma.review.create({ data: { bookingId: booking.id, propertyId: booking.propertyId, authorName: "Rowan R.", rating: 1, comment: "A duplicate review attempt." } }),
+    ).rejects.toThrow();
+    await reconnect();
+    expect(await prisma.review.count({ where: { bookingId: booking.id } })).toBe(1);
+  });
+
+  it("keeps account-linked bookings and reviews working unchanged", async () => {
+    const linked = await createBooking(prisma, stay({ checkIn: day(220), checkOut: day(222), idempotencyKey: newIdempotencyKey() }));
+    expect(linked.customerId).toBe(customerId);
+    await prisma.booking.update({ where: { id: linked.id }, data: { status: "COMPLETED" } });
+    const review = await prisma.review.create({
+      data: { bookingId: linked.id, propertyId: linked.propertyId, authorId: customerId, rating: 4, comment: "Linked account review." },
+      include: { author: true },
+    });
+    expect(review.author?.email).toBe("customer@example.test");
+    expect(review.authorName).toBeNull();
+
+    // Guest and account bookings live side by side for the same property.
+    const mixed = await prisma.booking.groupBy({ by: ["customerId"], where: { propertyId }, _count: { _all: true } });
+    expect(mixed.some((row) => row.customerId === null)).toBe(true);
+    expect(mixed.some((row) => row.customerId === customerId)).toBe(true);
+  });
+
+  it("keeps a review when its author's account is removed", async () => {
+    const temp = await prisma.user.create({ data: { email: "leaving@example.test", name: "Leaving User", role: "CUSTOMER" } });
+    const booking = await createBooking(prisma, stay({ customerId: null, contactEmail: "leaving@example.test", idempotencyKey: newIdempotencyKey(), checkIn: day(230), checkOut: day(232) }));
+    const review = await prisma.review.create({ data: { bookingId: booking.id, propertyId: booking.propertyId, authorId: temp.id, authorName: "Leaving U.", rating: 5, comment: "Review that should survive." } });
+    await prisma.user.delete({ where: { id: temp.id } });
+    const after = await prisma.review.findUniqueOrThrow({ where: { id: review.id } });
+    expect(after.authorId).toBeNull();
+    expect(after.authorName).toBe("Leaving U.");
+  });
+});
+
+describe("property categories in the database", () => {
+  it("has the six starter categories after migration, all live", async () => {
+    const starters = await prisma.category.findMany({ where: { id: { startsWith: "cat_" } }, orderBy: { name: "asc" } });
+    expect(starters.map((c) => c.slug)).toEqual(["apartment", "beach-house", "cabin", "hotel", "resort", "villa"]);
+    expect(starters.every((c) => c.status === "ACTIVE")).toBe(true);
+  });
+
+  it("stores a new category and lets a listing use it", async () => {
+    const category = await prisma.category.create({ data: { name: "Tree House", slug: "tree-house", status: "ACTIVE" } });
+    const updated = await prisma.property.update({ where: { id: propertyId }, data: { categoryId: category.id }, include: { category: true } });
+    expect(updated.category?.name).toBe("Tree House");
+  });
+
+  it("rejects a duplicate slug", async () => {
+    await expect(prisma.category.create({ data: { name: "Treehouse Two", slug: "tree-house" } })).rejects.toThrow();
+    await reconnect();
+  });
+
+  it("rejects a duplicate name regardless of letter case", async () => {
+    await expect(prisma.category.create({ data: { name: "TREE HOUSE", slug: "tree-house-upper" } })).rejects.toThrow();
+    await reconnect();
+    await expect(prisma.category.create({ data: { name: "villa", slug: "villa-lower" } })).rejects.toThrow();
+    await reconnect();
+    expect(await prisma.category.count({ where: { name: { equals: "tree house", mode: "insensitive" } } })).toBe(1);
+  });
+
+  it("keeps an owner's request pending and separate from live categories", async () => {
+    const request = await prisma.category.create({ data: { name: "Houseboat", slug: "houseboat", status: "PENDING", requestedById: ownerId } });
+    const live = await prisma.category.findMany({ where: { status: "ACTIVE" }, select: { id: true } });
+    expect(live.some((c) => c.id === request.id)).toBe(false);
+    const approved = await prisma.category.update({ where: { id: request.id }, data: { status: "ACTIVE" } });
+    expect(approved.status).toBe("ACTIVE");
+    expect(approved.requestedById).toBe(ownerId);
+  });
+
+  it("does not allow deleting a category that listings still use", async () => {
+    const used = await prisma.category.findUniqueOrThrow({ where: { slug: "tree-house" } });
+    await expect(prisma.category.delete({ where: { id: used.id } })).rejects.toThrow();
+    await reconnect();
+    expect(await prisma.category.count({ where: { id: used.id } })).toBe(1);
+  });
+});
+
+describe("administrator provisioning (ADMIN_EMAIL)", () => {
+  const roleOf = async (email: string) => (await prisma.user.findUnique({ where: { email } }))?.role;
+
+  it("does nothing when no address is configured or it is invalid", async () => {
+    const before = await prisma.user.count({ where: { role: "ADMIN" } });
+    expect(await ensureAdmin(prisma, "")).toBe("not-configured");
+    expect(await ensureAdmin(prisma, undefined)).toBe("not-configured");
+    expect(await ensureAdmin(prisma, "nonsense")).toBe("invalid-email");
+    expect(await ensureAdmin(prisma, "owner@example.test,customer@example.test")).toBe("invalid-email");
+    expect(await prisma.user.count({ where: { role: "ADMIN" } })).toBe(before);
+  });
+
+  it("never creates an account for an address that is not registered", async () => {
+    const users = await prisma.user.count();
+    expect(await ensureAdmin(prisma, "nobody@example.test")).toBe("no-account");
+    expect(await prisma.user.count()).toBe(users);
+    expect(await prisma.user.findUnique({ where: { email: "nobody@example.test" } })).toBeNull();
+  });
+
+  it("promotes only the named, existing account and records it in the audit log", async () => {
+    const chosen = await prisma.user.create({ data: { email: "site.owner@example.test", name: "Site Owner", role: "OWNER" } });
+    expect(await ensureAdmin(prisma, " Site.Owner@Example.test ")).toBe("promoted");
+    expect(await roleOf("site.owner@example.test")).toBe("ADMIN");
+    // Nobody else changed role.
+    expect(await roleOf("owner@example.test")).toBe("OWNER");
+    expect(await roleOf("customer@example.test")).toBe("CUSTOMER");
+    expect(await prisma.user.count({ where: { role: "ADMIN" } })).toBe(1);
+    expect(await prisma.auditLog.count({ where: { action: "user.promoted_to_admin", entityId: chosen.id } })).toBe(1);
+  });
+
+  it("is safe to run again on every deployment", async () => {
+    expect(await ensureAdmin(prisma, "site.owner@example.test")).toBe("already-admin");
+    expect(await prisma.auditLog.count({ where: { action: "user.promoted_to_admin" } })).toBe(1);
+  });
+
+  it("does not promote a suspended account", async () => {
+    await prisma.user.create({ data: { email: "blocked@example.test", name: "Blocked", role: "OWNER", status: "SUSPENDED" } });
+    expect(await ensureAdmin(prisma, "blocked@example.test")).toBe("suspended");
+    expect(await roleOf("blocked@example.test")).toBe("OWNER");
   });
 });

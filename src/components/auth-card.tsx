@@ -1,16 +1,16 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 
-export function AuthCard({ title, subtitle, tab, children, footer }: { title: string; subtitle?: string; tab?: "login" | "register"; children: ReactNode; footer?: ReactNode }) {
+export function AuthCard({ title, subtitle, tab, children, footer }: { title: string; subtitle?: string; tab?: "login" | "host"; children: ReactNode; footer?: ReactNode }) {
   return (
     <div className="animate-fade-up overflow-hidden rounded-2xl bg-white shadow-lift">
       {tab && (
         <div className="grid grid-cols-2 border-b border-cream-200 text-center text-sm font-semibold">
           <Link href="/login" aria-current={tab === "login" ? "page" : undefined} className={`py-4 transition ${tab === "login" ? "border-b-2 border-gold-500 text-ink" : "text-muted hover:text-ink"}`}>
-            Login
+            Sign in
           </Link>
-          <Link href="/register" aria-current={tab === "register" ? "page" : undefined} className={`py-4 transition ${tab === "register" ? "border-b-2 border-gold-500 text-ink" : "text-muted hover:text-ink"}`}>
-            Register
+          <Link href="/host/register" aria-current={tab === "host" ? "page" : undefined} className={`py-4 transition ${tab === "host" ? "border-b-2 border-gold-500 text-ink" : "text-muted hover:text-ink"}`}>
+            Become a Host
           </Link>
         </div>
       )}

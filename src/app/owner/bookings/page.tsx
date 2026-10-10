@@ -4,6 +4,7 @@ import { bookingListInclude, ReservationTable, StatusTabs } from "@/components/b
 import { EmptyState, PageHeader } from "@/components/ui";
 import { completeFinishedStays } from "@/lib/bookings";
 import { prisma } from "@/lib/prisma";
+import { HOST_ROLES } from "@/lib/booking-rules";
 import { requireRole } from "@/lib/session";
 
 const TABS: { value: string; label: string; where: Prisma.BookingWhereInput }[] = [
@@ -15,7 +16,7 @@ const TABS: { value: string; label: string; where: Prisma.BookingWhereInput }[] 
 ];
 
 export default async function OwnerBookingsPage({ searchParams }: { searchParams: Promise<{ status?: string }> }) {
-  const user = await requireRole(["OWNER"], "/owner/bookings");
+  const user = await requireRole(HOST_ROLES, "/owner/bookings");
   const { status = "" } = await searchParams;
   const tab = TABS.find((t) => t.value === status) ?? TABS[0];
   // Scoped to this owner's listings — an owner can never list another owner's reservations.

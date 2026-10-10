@@ -23,6 +23,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
     { href: "/admin/messages", label: "Messages", icon: "messages", badge: newMessages },
     { href: "/admin/settings", label: "Settings", icon: "platform" },
     { href: "/admin/audit", label: "Audit Logs", icon: "audit" },
+    { href: "/owner", label: "My Properties", icon: "earnings" },
   ];
 
   return (

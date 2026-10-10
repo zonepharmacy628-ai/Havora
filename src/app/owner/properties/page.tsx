@@ -4,10 +4,11 @@ import { Building2, Eye, Pencil, Plus } from "lucide-react";
 import { EmptyState, ListingBadge, Notice, PageHeader, Rating } from "@/components/ui";
 import { formatMoney } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
+import { HOST_ROLES } from "@/lib/booking-rules";
 import { requireRole } from "@/lib/session";
 
 export default async function OwnerPropertiesPage({ searchParams }: { searchParams: Promise<{ deleted?: string }> }) {
-  const user = await requireRole(["OWNER"], "/owner/properties");
+  const user = await requireRole(HOST_ROLES, "/owner/properties");
   const { deleted } = await searchParams;
   const properties = await prisma.property.findMany({
     where: { ownerId: user.id },
@@ -22,7 +23,7 @@ export default async function OwnerPropertiesPage({ searchParams }: { searchPara
         subtitle="Create, edit and publish your listings."
         action={
           <Link href="/owner/properties/new" className="btn btn-gold">
-            <Plus className="size-4" aria-hidden="true" /> Add property
+            <Plus className="size-4" aria-hidden="true" /> Add a Property
           </Link>
         }
       />

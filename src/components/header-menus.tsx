@@ -12,15 +12,15 @@ export type NavLink = { href: string; label: string };
 export function MainNav({ links }: { links: NavLink[] }) {
   const pathname = usePathname();
   return (
-    <nav className="hidden items-center gap-8 md:flex" aria-label="Main">
+    <nav className="hidden items-center gap-6 lg:flex xl:gap-8" aria-label="Main">
       {links.map((link) => {
-        const active = link.href === "/" ? pathname === "/" : pathname.startsWith(link.href);
+        const active = link.href === "/" ? pathname === "/" : pathname === link.href || pathname.startsWith(`${link.href}/`);
         return (
           <Link
             key={link.href}
             href={link.href}
             aria-current={active ? "page" : undefined}
-            className={`relative py-2 text-[13px] font-medium tracking-wide transition ${active ? "text-white" : "text-navy-200 hover:text-white"}`}
+            className={`relative py-2 text-[13px] font-medium tracking-wide whitespace-nowrap transition ${active ? "text-white" : "text-navy-200 hover:text-white"}`}
           >
             {link.label}
             {active && <span className="absolute inset-x-0 -bottom-0.5 h-px bg-gold-500" />}
@@ -31,7 +31,14 @@ export function MainNav({ links }: { links: NavLink[] }) {
   );
 }
 
-type MenuUser = { name: string; email: string; roleLabel: string; dashboardHref: string; links: NavLink[] };
+type MenuUser = {
+  name: string;
+  email: string;
+  roleLabel: string;
+  /** Only hosts and administrators have dashboards. */
+  dashboards: NavLink[];
+  links: NavLink[];
+};
 
 export function UserMenu({ user }: { user: MenuUser }) {
   const [open, setOpen] = useState(false);
@@ -71,11 +78,13 @@ export function UserMenu({ user }: { user: MenuUser }) {
             <p className="mt-1.5 text-[10px] font-semibold tracking-widest text-gold-600 uppercase">{user.roleLabel}</p>
           </div>
           <div className="p-1.5" onClick={() => setOpen(false)}>
-            <Link href={user.dashboardHref} role="menuitem" className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium text-ink hover:bg-cream-100">
-              <LayoutDashboard className="size-4 text-gold-600" aria-hidden="true" /> Dashboard
-            </Link>
+            {user.dashboards.map((link) => (
+              <Link key={link.href} href={link.href} role="menuitem" className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium text-ink hover:bg-cream-100">
+                <LayoutDashboard className="size-4 text-gold-600" aria-hidden="true" /> {link.label}
+              </Link>
+            ))}
             {user.links.map((link) => (
-              <Link key={link.href} href={link.href} role="menuitem" className="block rounded-lg px-3 py-2 pl-[38px] text-sm text-ink hover:bg-cream-100">
+              <Link key={link.href} href={link.href} role="menuitem" className={`block rounded-lg px-3 py-2 text-sm text-ink hover:bg-cream-100 ${user.dashboards.length ? "pl-[38px]" : ""}`}>
                 {link.label}
               </Link>
             ))}
@@ -91,22 +100,35 @@ export function UserMenu({ user }: { user: MenuUser }) {
   );
 }
 
-export function MobileNav({ links, signedIn }: { links: NavLink[]; signedIn: boolean }) {
+type MobileNavProps = {
+  links: NavLink[];
+  signedIn: boolean;
+  /** Show the "List Your Property" call to action (hidden for people who already host). */
+  showHostCta: boolean;
+};
+
+export function MobileNav({ links, signedIn, showHostCta }: MobileNavProps) {
   const [open, setOpen] = useState(false);
 
   return (
-    <div className="md:hidden">
+    <div className="lg:hidden">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
+        aria-controls="mobile-menu"
         aria-label={open ? "Close menu" : "Open menu"}
         className="flex size-10 cursor-pointer items-center justify-center rounded-lg border border-white/15 text-white"
       >
         {open ? <X className="size-5" /> : <Menu className="size-5" />}
       </button>
       {open && (
-        <div className="animate-fade-up absolute inset-x-0 top-full z-40 border-t border-white/10 bg-navy-900 px-4 pt-2 pb-5 shadow-lift">
+        <div id="mobile-menu" className="animate-fade-up absolute inset-x-0 top-full z-40 max-h-[calc(100vh-68px)] overflow-y-auto border-t border-white/10 bg-navy-900 px-4 pt-2 pb-5 shadow-lift">
+          {showHostCta && (
+            <Link href="/host" onClick={() => setOpen(false)} className="btn btn-gold mt-3 mb-1 w-full py-3 text-[15px]">
+              List Your Property
+            </Link>
+          )}
           <nav className="flex flex-col" aria-label="Mobile" onClick={() => setOpen(false)}>
             {links.map((link) => (
               <Link key={link.href} href={link.href} className="border-b border-white/5 py-3.5 text-[15px] font-medium text-white">
@@ -115,14 +137,9 @@ export function MobileNav({ links, signedIn }: { links: NavLink[]; signedIn: boo
             ))}
           </nav>
           {!signedIn && (
-            <div className="mt-4 grid grid-cols-2 gap-3" onClick={() => setOpen(false)}>
-              <Link href="/login" className="btn btn-ghost-light">
-                Sign in
-              </Link>
-              <Link href="/register" className="btn btn-gold">
-                Get started
-              </Link>
-            </div>
+            <Link href="/login" onClick={() => setOpen(false)} className="btn btn-ghost-light mt-4 w-full">
+              Host sign in
+            </Link>
           )}
         </div>
       )}

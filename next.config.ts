@@ -23,6 +23,16 @@ const nextConfig: NextConfig = {
       },
     },
   },
+  // The separate customer dashboard was removed; its old addresses lead to the
+  // ordinary site pages that replaced them. (/account/settings is role-aware, see its page.)
+  async redirects() {
+    return [
+      { source: "/account", destination: "/bookings", permanent: false },
+      { source: "/account/bookings", destination: "/bookings", permanent: false },
+      { source: "/account/reviews", destination: "/bookings", permanent: false },
+      { source: "/account/wishlist", destination: "/wishlist", permanent: false },
+    ];
+  },
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },

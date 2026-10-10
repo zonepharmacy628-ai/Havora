@@ -4,6 +4,8 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { safely } from "@/lib/action-utils";
 import { refreshRating } from "@/lib/reviews";
+import { sendEmailWithResult } from "@/lib/email";
+import { rateLimit } from "@/lib/rate-limit";
 import { assertRole } from "@/lib/session";
 import { SETTING_KEYS } from "@/lib/settings";
 import { formToObject, invalid, reasonSchema, settingsSchema, type FormState } from "@/lib/validation";
@@ -48,7 +50,7 @@ export async function reviewListingAction(_prev: FormState, formData: FormData):
           action: `listing.${decision}`,
           entityType: "Property",
           entityId: property.id,
-          metadata: { title: property.title, from: property.status, reason: note ?? null },
+          metadata: { title: property.title, from: property.status, reason: note ?? null, ownListing: property.ownerId === admin.id },
         },
       }),
     ]);
@@ -179,5 +181,28 @@ export async function resolveMessageAction(_prev: FormState, formData: FormData)
     ]);
     revalidatePath("/admin/messages");
     return { ok: true };
+  });
+}
+
+/**
+ * Sends one test message to the signed-in administrator's own address and
+ * reports what the mail provider actually did. Used to verify email delivery
+ * without emailing any guest or host.
+ */
+export async function sendTestEmailAction(): Promise<FormState> {
+  return safely(async () => {
+    const admin = await assertRole(["ADMIN"]);
+    if (!(await rateLimit(`test-email:${admin.id}`, 5, 3600))) return { ok: false, message: "Too many test emails. Please try again in an hour." };
+
+    const result = await sendEmailWithResult({
+      to: admin.email,
+      subject: "HAVORA test email",
+      text: `Hello ${admin.name},\n\nThis is a test message from your HAVORA Admin Panel. If you are reading it, email delivery is working.\n\n— HAVORA`,
+    });
+    await prisma.auditLog.create({ data: { actorId: admin.id, action: "email.test", entityType: "PlatformSetting", metadata: { result } } });
+
+    if (result === "sent") return { ok: true, message: `The mail provider accepted a test message for ${admin.email}. Check that inbox (and spam) to confirm it arrives.` };
+    if (result === "off") return { ok: false, message: "Email is not configured: RESEND_API_KEY and EMAIL_FROM must both be set in Vercel, followed by a redeploy." };
+    return { ok: false, message: "The mail provider rejected the test message. The usual causes are an invalid API key, or an EMAIL_FROM address on a domain that is not verified in Resend." };
   });
 }

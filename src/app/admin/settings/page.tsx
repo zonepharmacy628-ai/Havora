@@ -1,4 +1,4 @@
-import { saveSettingsAction } from "@/actions/admin";
+import { saveSettingsAction, sendTestEmailAction } from "@/actions/admin";
 import { ActionForm, CheckboxField, SubmitButton, TextField } from "@/components/forms";
 import { ProfileForms } from "@/components/profile-forms";
 import { Notice, PageHeader } from "@/components/ui";
@@ -12,7 +12,7 @@ export default async function AdminSettingsPage() {
   const settings = await getSettings();
 
   const integrations = [
-    { name: "Email delivery (Resend)", ok: emailConfigured(), off: "Not configured — password reset emails are not sent." },
+    { name: "Email delivery (Resend)", ok: emailConfigured(), off: "Not configured — no booking confirmations, booking-link recovery or password reset emails are sent." },
     { name: "Photo uploads (Cloudinary)", ok: cloudinaryConfigured(), off: "Not configured — owners add photos by link." },
     { name: "Online payments", ok: false, off: "Disabled in this release — Pay at Property only." },
   ];
@@ -50,6 +50,12 @@ export default async function AdminSettingsPage() {
               </li>
             ))}
           </ul>
+          <ActionForm action={sendTestEmailAction} messagePosition="bottom" className="mt-4 border-t border-cream-200 pt-4">
+            <p className="mb-3 text-xs leading-5 text-muted">Send one test message to your own address ({user.email}) to check delivery. No guest or host is emailed.</p>
+            <SubmitButton className="btn btn-outline btn-sm" pendingText="Sending…">
+              Send test email
+            </SubmitButton>
+          </ActionForm>
           <p className="mt-4 border-t border-cream-200 pt-3 text-xs leading-5 text-muted">Integrations are configured with environment variables on the server (see the README), never from this page.</p>
         </section>
       </div>

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { ExternalLink } from "lucide-react";
 import { DashboardNav, type DashboardLink } from "./dashboard-nav";
 import { SiteHeader } from "./site-header";
 import { Avatar } from "./ui";
@@ -23,6 +24,19 @@ export function DashboardShell({ user, roleLabel, links, children }: Props) {
                 <p className="truncate text-sm font-semibold text-white">{user.name}</p>
                 <p className="text-[11px] font-medium tracking-wider text-gold-400 uppercase">{roleLabel}</p>
               </div>
+            </div>
+            {/* Opens the public site in a new tab, exactly as visitors see it. A relative
+                address is used, so it always points at whichever domain the site is running on. */}
+            <div className="px-4 pb-4">
+              <a
+                href="/"
+                target="_blank"
+                rel="noopener"
+                className="btn w-full border border-gold-500/50 bg-gold-500/10 text-gold-300 hover:border-gold-400 hover:bg-gold-500/20 hover:text-gold-200"
+              >
+                <ExternalLink className="size-4" aria-hidden="true" /> View Website
+                <span className="sr-only">(opens in a new tab)</span>
+              </a>
             </div>
             <DashboardNav links={links} />
           </div>

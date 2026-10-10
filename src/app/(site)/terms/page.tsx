@@ -12,7 +12,7 @@ export default async function TermsPage() {
       <PageHero eyebrow="Legal" title="Terms & Conditions" subtitle="The rules for using HAVORA as a guest or as a host." />
       <article className="prose-legal container-page max-w-3xl py-14">
         <p>
-          These terms govern your use of the HAVORA website and services. By creating an account or making a booking you agree to them. Please read them together with our{" "}
+          These terms govern your use of the HAVORA website and services. By making a booking or creating a host account you agree to them. Please read them together with our{" "}
           <Link href="/privacy">Privacy Policy</Link> and <Link href="/cancellation-policy">Cancellation Policy</Link>.
         </p>
 
@@ -21,11 +21,12 @@ export default async function TermsPage() {
           HAVORA is an online marketplace where property owners (“hosts”) list accommodation and travellers (“guests”) reserve it. The contract for a stay is between the guest and the host. HAVORA provides the platform, reviews listings before publication and records bookings.
         </p>
 
-        <h2>2. Accounts</h2>
+        <h2>2. Guests and accounts</h2>
         <ul>
           <li>You must be at least 18 years old and provide accurate information.</li>
-          <li>You are responsible for keeping your password confidential and for activity on your account.</li>
-          <li>We may suspend accounts that breach these terms, provide false information or misuse the service.</li>
+          <li>Guests book without an account. You are responsible for the accuracy of the contact details you give and for keeping your private booking link confidential — anyone holding it can view and cancel that booking.</li>
+          <li>Hosts need an account and are responsible for keeping their password confidential and for activity on their account.</li>
+          <li>We may suspend accounts, and cancel bookings, that breach these terms, use false information or misuse the service, including bookings made with no intention to stay.</li>
         </ul>
 
         <h2>3. Bookings</h2>
@@ -53,6 +54,7 @@ export default async function TermsPage() {
         <ul>
           <li>Hosts must have the right to offer their property, describe it accurately and keep their calendar up to date.</li>
           <li>Hosts must only publish photos they own or are licensed to use.</li>
+          <li>New listings from hosts are reviewed by HAVORA before publication.</li>
           <li>HAVORA charges hosts a commission on each booking, displayed in the host dashboard. Commission terms for a booking are fixed when the booking is made.</li>
         </ul>
 

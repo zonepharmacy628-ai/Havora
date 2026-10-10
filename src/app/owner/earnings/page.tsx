@@ -1,6 +1,6 @@
 import { BadgeDollarSign, HandCoins, Percent, Wallet } from "lucide-react";
 import { BarChart, Notice, PageHeader, StatCard } from "@/components/ui";
-import { REVENUE_BOOKING_STATUSES } from "@/lib/booking-rules";
+import { HOST_ROLES, REVENUE_BOOKING_STATUSES } from "@/lib/booking-rules";
 import { formatBps, formatMoney } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
 import { monthlyBookingTotals, revenueSummary } from "@/lib/reports";
@@ -8,7 +8,7 @@ import { requireRole } from "@/lib/session";
 import { getSettings } from "@/lib/settings";
 
 export default async function OwnerEarningsPage() {
-  const user = await requireRole(["OWNER"], "/owner/earnings");
+  const user = await requireRole(HOST_ROLES, "/owner/earnings");
   const mine = { property: { ownerId: user.id } };
 
   const [summary, monthly, collected, perProperty, settings] = await Promise.all([

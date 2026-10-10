@@ -1,41 +1,40 @@
 import Image from "next/image";
 import Link from "next/link";
-import { ArrowRight, BadgeCheck, Globe2, Headset, Quote, ShieldCheck, Wallet } from "lucide-react";
+import { ArrowRight, BadgeCheck, Globe2, Quote, ShieldCheck, Wallet, Zap } from "lucide-react";
 import { PropertyCard } from "@/components/property-card";
 import { SearchBar } from "@/components/search-bar";
 import { SectionHeading, Stars } from "@/components/ui";
-import { HERO_IMAGE, HOST_IMAGE, PROPERTY_TYPES } from "@/lib/constants";
+import { getPublicCategories, withFallbackImages } from "@/lib/categories";
+import { HERO_IMAGE, HOST_IMAGE } from "@/lib/constants";
 import { toIso } from "@/lib/dates";
 import { prisma } from "@/lib/prisma";
-import { getFeaturedProperties, getPopularDestinations, getRecommendedProperties, getTypeCounts, getWishlistIds } from "@/lib/properties";
-import { getCurrentUser } from "@/lib/session";
+import { getFeaturedProperties, getPopularDestinations, getRecommendedProperties } from "@/lib/properties";
 
 export const dynamic = "force-dynamic";
 
 const TRUST = [
   { icon: BadgeCheck, title: "Reviewed Listings", text: "Every home is checked before it goes live" },
-  { icon: Headset, title: "Dedicated Support", text: "Real people, ready to help" },
+  { icon: Zap, title: "No Account Needed", text: "Book as a guest in minutes" },
   { icon: Wallet, title: "Pay at Property", text: "Reserve now, no online charge" },
   { icon: Globe2, title: "Global Destinations", text: "Luxury stays worldwide" },
 ];
 
 export default async function HomePage() {
-  const user = await getCurrentUser();
-  const [featured, destinations, typeCounts, wishlist, testimonials] = await Promise.all([
+  const [featured, destinations, allCategories, testimonials] = await Promise.all([
     getFeaturedProperties(4),
     getPopularDestinations(5),
-    getTypeCounts(),
-    getWishlistIds(user?.id),
+    getPublicCategories(),
     // Testimonials are genuine published guest reviews from the database — never invented copy.
     prisma.review.findMany({
       where: { status: "PUBLISHED", rating: 5, property: { status: "PUBLISHED" } },
       orderBy: { createdAt: "desc" },
       take: 3,
-      select: { id: true, comment: true, rating: true, author: { select: { name: true, country: true } }, property: { select: { title: true, slug: true } } },
+      select: { id: true, comment: true, rating: true, authorName: true, author: { select: { name: true, country: true } }, property: { select: { title: true, slug: true } } },
     }),
   ]);
   const recommended = await getRecommendedProperties(featured.map((p) => p.id), 4);
-  const categories = PROPERTY_TYPES.filter((type) => (typeCounts.get(type.value) ?? 0) > 0);
+  // Categories come from the database; only those with published listings are shown.
+  const categories = await withFallbackImages(allCategories.filter((category) => category.count > 0));
 
   return (
     <>
@@ -108,7 +107,7 @@ export default async function HomePage() {
         {featured.length > 0 ? (
           <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
             {featured.map((property, index) => (
-              <PropertyCard key={property.id} property={property} saved={wishlist.has(property.id)} priority={index < 2} />
+              <PropertyCard key={property.id} property={property} priority={index < 2} />
             ))}
           </div>
         ) : (
@@ -119,17 +118,17 @@ export default async function HomePage() {
       {/* ───────── Categories ───────── */}
       {categories.length > 0 && (
         <section className="container-page pt-16">
-          <SectionHeading title="Browse by Property Type" subtitle="From private villas to city apartments." />
+          <SectionHeading title="Browse by Category" subtitle="From private villas to city apartments." />
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
-            {categories.map((type) => (
-              <Link key={type.value} href={`/properties?type=${type.value}`} className="group card overflow-hidden transition hover:-translate-y-0.5 hover:shadow-lift">
+            {categories.map((category) => (
+              <Link key={category.id} href={`/properties?category=${category.slug}`} className="group card overflow-hidden transition hover:-translate-y-0.5 hover:shadow-lift">
                 <div className="relative aspect-[5/4] overflow-hidden bg-cream-200">
-                  <Image src={type.image} alt="" fill sizes="(min-width: 1024px) 200px, 45vw" className="object-cover transition duration-700 group-hover:scale-105" />
+                  {category.imageUrl && <Image src={category.imageUrl} alt="" fill sizes="(min-width: 1024px) 200px, 45vw" className="object-cover transition duration-700 group-hover:scale-105" />}
                 </div>
                 <div className="px-3.5 py-3">
-                  <h3 className="text-sm font-semibold text-ink">{type.plural}</h3>
+                  <h3 className="text-sm font-semibold text-ink">{category.name}</h3>
                   <p className="text-xs text-muted">
-                    {typeCounts.get(type.value)} listing{typeCounts.get(type.value) === 1 ? "" : "s"}
+                    {category.count} listing{category.count === 1 ? "" : "s"}
                   </p>
                 </div>
               </Link>
@@ -144,7 +143,7 @@ export default async function HomePage() {
           <SectionHeading title="Recommended Stays" subtitle="Loved by guests for comfort, location and service." href="/properties?sort=rating" linkLabel="See top rated" />
           <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
             {recommended.map((property) => (
-              <PropertyCard key={property.id} property={property} saved={wishlist.has(property.id)} />
+              <PropertyCard key={property.id} property={property} />
             ))}
           </div>
         </section>
@@ -181,8 +180,8 @@ export default async function HomePage() {
                 <figcaption className="mt-5 border-t border-cream-200 pt-4">
                   <Stars rating={review.rating} className="size-3.5" />
                   <p className="mt-1.5 text-sm font-semibold text-ink">
-                    {review.author.name}
-                    {review.author.country && <span className="font-normal text-muted"> · {review.author.country}</span>}
+                    {review.author?.name ?? review.authorName ?? "Guest"}
+                    {review.author?.country && <span className="font-normal text-muted"> · {review.author.country}</span>}
                   </p>
                   <Link href={`/properties/${review.property.slug}`} className="text-xs text-gold-700 hover:underline">
                     Stayed at {review.property.title}
@@ -207,8 +206,8 @@ export default async function HomePage() {
                 Reach travellers from around the world, manage your calendar and reservations in one place, and keep full control of your pricing.
               </p>
             </div>
-            <Link href="/register?type=owner" className="btn btn-gold btn-lg">
-              Get Started <ArrowRight className="size-4" aria-hidden="true" />
+            <Link href="/host" className="btn btn-gold btn-lg">
+              List Your Property <ArrowRight className="size-4" aria-hidden="true" />
             </Link>
           </div>
         </div>

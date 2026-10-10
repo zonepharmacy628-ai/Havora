@@ -90,11 +90,14 @@ export const loginSchema = z.object({
   password: z.string({ error: "Password is required." }).min(1, "Password is required.").max(128),
 });
 
-export const registerSchema = z.object({
+/**
+ * Host (property owner) registration. There is deliberately no role or
+ * account-type field: the role is fixed on the server by the registration route.
+ */
+export const ownerRegisterSchema = z.object({
   name: text(2, 80, "Full name"),
   email,
   password: passwordSchema,
-  accountType: z.enum(["CUSTOMER", "OWNER"], { error: "Choose an account type." }),
   terms: z.literal("on", { error: "You must accept the Terms and Privacy Policy." }),
 });
 
@@ -134,6 +137,12 @@ export const bookingSchema = staySchema.extend({
   contactPhone: phone,
   specialRequests: optionalText(1000),
   additionalGuests: optionalText(1000),
+  idempotencyKey: z.string().regex(/^[A-Za-z0-9_-]{16,64}$/, "This checkout session is invalid. Please reload the page."),
+});
+
+export const bookingLookupSchema = z.object({
+  reference: z.string({ error: "Enter your booking reference." }).trim().min(6, "Enter your booking reference.").max(20),
+  email,
 });
 
 export const reasonSchema = z.object({
@@ -153,7 +162,8 @@ export const propertySchema = z
     title: text(8, 90, "Title"),
     summary: text(20, 160, "Short summary"),
     description: text(80, 5000, "Description"),
-    type: z.enum(["VILLA", "APARTMENT", "HOTEL", "BEACH_HOUSE", "CABIN", "RESORT"], { error: "Choose a property type." }),
+    // The id of a category from the database; the server checks that it exists and is live.
+    categoryId: z.string({ error: "Choose a category." }).trim().min(1, "Choose a category.").max(40, "Choose a category."),
     addressLine: text(4, 160, "Address"),
     city: text(2, 80, "City"),
     region: optionalText(80),
@@ -185,6 +195,13 @@ export const propertySchema = z
     path: ["maxNights"],
     message: "Maximum nights must be at least the minimum nights.",
   });
+
+export const categorySchema = z.object({
+  name: text(2, 40, "Category name").regex(/^[\p{L}\p{N}][\p{L}\p{N} &'’\-/]*$/u, "Use letters, numbers, spaces and - & ' / only."),
+  description: optionalText(200),
+  imageUrl: optionalText(600),
+  imagePublicId: optionalText(200),
+});
 
 export const blockSchema = z
   .object({

@@ -1,4 +1,4 @@
-import { randomInt } from "node:crypto";
+import { randomBytes, randomInt } from "node:crypto";
 import { Prisma, type BookingStatus, type PrismaClient } from "@prisma/client";
 import { ACTIVE_BOOKING_STATUSES, canTransition, validateStay, type BookingActor } from "./booking-rules";
 import { nightsBetween, parseDate, toIso, todayIn } from "./dates";
@@ -23,9 +23,17 @@ export function generateBookingReference(): string {
   return `HV-${code}`;
 }
 
+/** A fresh key for one checkout page view (see CreateBookingInput.idempotencyKey). */
+export function newIdempotencyKey(): string {
+  return randomBytes(18).toString("base64url");
+}
+
 export type CreateBookingInput = {
   propertyId: string;
-  customerId: string;
+  /** Account the booking is linked to, or null for a guest booking. */
+  customerId: string | null;
+  /** Unique key from the checkout page; a retry with the same key returns the same booking. */
+  idempotencyKey?: string;
   checkIn: string;
   checkOut: string;
   adults: number;
@@ -66,6 +74,36 @@ export async function findConflict(
 
 const UNAVAILABLE = "Sorry, those dates are no longer available. Please choose different dates.";
 
+/** Most upcoming, still-active bookings one email address may hold at a time. */
+export const MAX_ACTIVE_BOOKINGS_PER_EMAIL = 4;
+
+/** Basic protection against one person blocking many calendars with throwaway bookings. */
+export async function assertWithinBookingCap(db: Tx | PrismaClient, contactEmail: string, today: Date = new Date()): Promise<void> {
+  const active = await db.booking.count({
+    where: { contactEmail, status: { in: ACTIVE_BOOKING_STATUSES }, checkOut: { gte: parseDate(toIso(today)) } },
+  });
+  if (active >= MAX_ACTIVE_BOOKINGS_PER_EMAIL) {
+    throw new BookingError(
+      "The limit of upcoming bookings for this email address has been reached. Please contact us if you need to reserve more stays.",
+    );
+  }
+}
+
+/** Finds the booking a repeated checkout submission already created, if any. */
+async function findReplay(db: Tx | PrismaClient, input: CreateBookingInput) {
+  if (!input.idempotencyKey) return null;
+  const existing = await db.booking.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
+  // Only the same request (same property, dates and guest email) may reuse the key.
+  const same =
+    existing &&
+    existing.propertyId === input.propertyId &&
+    existing.contactEmail === input.contactEmail &&
+    toIso(existing.checkIn) === input.checkIn &&
+    toIso(existing.checkOut) === input.checkOut;
+  if (existing && !same) throw new BookingError("This checkout session has expired. Please start your booking again.");
+  return existing;
+}
+
 /**
  * Creates a booking atomically. Nothing price- or availability-related is
  * taken from the client: the property row is locked, availability is
@@ -78,10 +116,18 @@ export async function createBooking(prisma: PrismaClient, input: CreateBookingIn
     throw new BookingError("Online payment is not available yet. Please choose Pay at Property.");
   }
 
+  const replay = await findReplay(prisma, input);
+  if (replay) return replay;
+
   try {
     return await prisma.$transaction(async (tx) => {
       // Serialise concurrent bookings for the same property.
       await tx.$queryRaw`SELECT "id" FROM "Property" WHERE "id" = ${input.propertyId} FOR UPDATE`;
+
+      // A double-click can reach this point twice; the second request waits on the
+      // lock above and then finds the booking the first one created.
+      const duplicate = await findReplay(tx, input);
+      if (duplicate) return duplicate;
 
       const property = await tx.property.findUnique({
         where: { id: input.propertyId },
@@ -90,7 +136,7 @@ export async function createBooking(prisma: PrismaClient, input: CreateBookingIn
       if (!property || property.status !== "PUBLISHED" || property.owner.status !== "ACTIVE") {
         throw new BookingError("This property is not available for booking.");
       }
-      if (property.ownerId === input.customerId) {
+      if (input.customerId && property.ownerId === input.customerId) {
         throw new BookingError("You cannot book your own property.");
       }
       if (!property.payAtPropertyEnabled) {
@@ -127,6 +173,7 @@ export async function createBooking(prisma: PrismaClient, input: CreateBookingIn
           reference: generateBookingReference(),
           propertyId: property.id,
           customerId: input.customerId,
+          idempotencyKey: input.idempotencyKey ?? null,
           checkIn: parseDate(input.checkIn),
           checkOut: parseDate(input.checkOut),
           nights: quote.nights,
@@ -172,7 +219,7 @@ export async function createBooking(prisma: PrismaClient, input: CreateBookingIn
           action: "booking.created",
           entityType: "Booking",
           entityId: booking.id,
-          metadata: { reference: booking.reference, status: booking.status, totalCents: booking.totalCents },
+          metadata: { reference: booking.reference, status: booking.status, totalCents: booking.totalCents, guest: !input.customerId },
         },
       });
 
@@ -180,6 +227,11 @@ export async function createBooking(prisma: PrismaClient, input: CreateBookingIn
     });
   } catch (error) {
     if (isOverlapViolation(error)) throw new BookingError(UNAVAILABLE);
+    // Two identical submissions raced past the checks: return the one that won.
+    if ((error as { code?: string }).code === "P2002" && input.idempotencyKey) {
+      const winner = await prisma.booking.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
+      if (winner) return winner;
+    }
     throw error;
   }
 }

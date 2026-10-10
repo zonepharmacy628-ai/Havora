@@ -1,41 +1,49 @@
 import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { redirect } from "next/navigation";
 import { ArrowLeft, CalendarDays, CheckCircle2, Clock, Hourglass, MapPin, Phone, Mail, Users, Wallet } from "lucide-react";
-import { bookingDecisionAction, cancelBookingAction, recordPaymentAction, submitReviewAction } from "@/actions/booking";
+import { bookingDecisionAction, cancelBookingAction, recordPaymentAction, resetBookingLinkAction, submitReviewAction } from "@/actions/booking";
 import { ActionForm, SelectField, SubmitButton, TextAreaField } from "@/components/forms";
+import { PrivateLink } from "@/components/private-link";
 import { BookingBadge, Notice, PaymentBadge, Stars } from "@/components/ui";
-import { bookingActorFor, customerCancellation } from "@/lib/booking-rules";
+import { normaliseReference } from "@/lib/booking-access";
+import { customerCancellation } from "@/lib/booking-rules";
 import { completeFinishedStays } from "@/lib/bookings";
 import { CANCELLATION_POLICIES, PAYMENT_METHOD_LABEL, PAYMENT_STATUS_LABEL } from "@/lib/constants";
 import { formatDate, formatDateTime, toIso, todayIn } from "@/lib/dates";
 import { formatBps, formatMoney } from "@/lib/money";
+import { privateBookingLink, resolveBookingAccess } from "@/lib/guest-access";
 import { prisma } from "@/lib/prisma";
-import { requireUser } from "@/lib/session";
 
-export const metadata: Metadata = { title: "Booking details", robots: { index: false } };
+export const metadata: Metadata = { title: "Booking details", robots: { index: false, follow: false }, referrer: "no-referrer" };
 
-type Props = { params: Promise<{ reference: string }>; searchParams: Promise<{ new?: string }> };
+type Props = { params: Promise<{ reference: string }>; searchParams: Promise<{ new?: string; mail?: string }> };
 
 export default async function BookingPage({ params, searchParams }: Props) {
-  const [{ reference }, query] = await Promise.all([params, searchParams]);
-  const user = await requireUser(`/booking/${reference}`);
+  const [{ reference: rawReference }, query] = await Promise.all([params, searchParams]);
+  // Anything that is not a well-formed reference gets the same answer as an unknown one.
+  const reference = normaliseReference(rawReference);
+  if (!reference) redirect("/bookings?need=1");
 
-  await completeFinishedStays(prisma, { reference });
   const booking = await prisma.booking.findUnique({
     where: { reference },
     include: {
       property: { include: { images: { orderBy: { position: "asc" }, take: 1 }, owner: { select: { name: true, email: true, phone: true } } } },
-      customer: { select: { name: true, email: true } },
       guests: { orderBy: { isPrimary: "desc" } },
       payments: { orderBy: { createdAt: "asc" }, include: { recordedBy: { select: { name: true } } } },
       review: true,
     },
   });
-  // Bookings the user has no relationship to look exactly like missing ones.
-  const actor = booking ? bookingActorFor(user, booking) : null;
-  if (!booking || !actor) notFound();
+  // A reference number alone opens nothing. Visitors without proof of access get the
+  // same redirect whether or not the booking exists, so references cannot be probed.
+  const access = booking ? await resolveBookingAccess(booking) : null;
+  if (!booking || !access) redirect("/bookings?need=1");
+  const { actor, user, viaGuestKey } = access;
+
+  if (booking.status === "CONFIRMED" && (await completeFinishedStays(prisma, { reference })) > 0) {
+    redirect(`/booking/${reference}`);
+  }
 
   const { property } = booking;
   const isStaff = actor !== "CUSTOMER";
@@ -47,7 +55,9 @@ export default async function BookingPage({ params, searchParams }: Props) {
   const policy = CANCELLATION_POLICIES[booking.cancellationPolicy];
   const cancellation = customerCancellation({ status: booking.status, checkIn, cancellationPolicy: booking.cancellationPolicy }, today);
   const isActive = booking.status === "PENDING" || booking.status === "CONFIRMED" || booking.status === "CANCELLATION_REQUESTED";
-  const backHref = actor === "ADMIN" ? "/admin/bookings" : actor === "OWNER" ? "/owner/bookings" : "/account/bookings";
+  const backHref = actor === "ADMIN" ? "/admin/bookings" : actor === "OWNER" ? "/owner/bookings" : "/bookings";
+  // Guests (and the linked account holder) can copy their private link from this page.
+  const privateLink = actor === "CUSTOMER" ? privateBookingLink(booking) : null;
   const cover = property.images[0];
 
   const banner =
@@ -71,7 +81,7 @@ export default async function BookingPage({ params, searchParams }: Props) {
   return (
     <div className="container-page max-w-5xl py-8 sm:py-10">
       <Link href={backHref} className="mb-5 inline-flex items-center gap-1.5 text-sm font-medium text-muted hover:text-gold-700">
-        <ArrowLeft className="size-4" aria-hidden="true" /> Back to bookings
+        <ArrowLeft className="size-4" aria-hidden="true" /> {isStaff ? "Back to reservations" : "My bookings"}
       </Link>
 
       {query.new === "1" && banner && actor === "CUSTOMER" && (
@@ -182,6 +192,8 @@ export default async function BookingPage({ params, searchParams }: Props) {
             )}
           </section>
 
+          {privateLink && (query.new === "1" || viaGuestKey) && <PrivateLink link={privateLink} mail={query.new === "1" && (query.mail === "sent" || query.mail === "failed" || query.mail === "off") ? query.mail : null} email={booking.contactEmail} />}
+
           {booking.cancellationReason && (
             <Notice tone="warning">
               <strong>{booking.status === "DECLINED" ? "Reason for declining" : "Cancellation note"}:</strong> {booking.cancellationReason}
@@ -219,7 +231,7 @@ export default async function BookingPage({ params, searchParams }: Props) {
           {isStaff && (staffDecisions.length > 0 || canRecordPayment || booking.status === "CONFIRMED") && (
             <section className="card card-pad">
               <h2 className="mb-1 font-serif text-lg font-medium text-ink">Manage booking</h2>
-              <p className="mb-4 text-xs text-muted">You are acting as {actor === "ADMIN" ? "an administrator" : "the host"}. Every action is recorded in the audit log.</p>
+              <p className="mb-4 text-xs text-muted">You are signed in as {user?.name} and acting as {actor === "ADMIN" ? "an administrator" : "the host"}. Every action is recorded in the audit log.</p>
               <div className="space-y-5">
                 {staffDecisions.length > 0 && (
                   <ActionForm action={bookingDecisionAction}>
@@ -253,6 +265,19 @@ export default async function BookingPage({ params, searchParams }: Props) {
                   </ActionForm>
                 )}
               </div>
+            </section>
+          )}
+
+          {actor === "ADMIN" && (
+            <section className="card card-pad">
+              <h2 className="mb-1 font-serif text-lg font-medium text-ink">Guest access</h2>
+              <p className="mb-4 text-sm text-muted">
+                {booking.customerId ? "This booking is linked to a customer account and also has a private guest link." : "This is a guest booking, opened with a private link."} If the guest reports that their link was shared, reset it: old links stop working and a new one is emailed to {booking.contactEmail}.
+              </p>
+              <ActionForm action={resetBookingLinkAction} confirm="Reset the private link for this booking? Any link the guest already has will stop working." messagePosition="bottom">
+                <input type="hidden" name="bookingId" value={booking.id} />
+                <SubmitButton className="btn btn-outline">Reset private link</SubmitButton>
+              </ActionForm>
             </section>
           )}
 

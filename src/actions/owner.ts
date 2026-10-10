@@ -5,7 +5,8 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { safely } from "@/lib/action-utils";
 import { audit } from "@/lib/audit";
-import { ACTIVE_BOOKING_STATUSES, canManageProperty } from "@/lib/booking-rules";
+import { ACTIVE_BOOKING_STATUSES, canManageProperty, HOST_ROLES } from "@/lib/booking-rules";
+import { isSelectableCategory } from "@/lib/category-rules";
 import { cloudinaryConfigured, createUploadSignature, destroyAsset, isOwnCloudinaryUrl } from "@/lib/cloudinary";
 import { ALLOWED_IMAGE_HOSTS } from "@/lib/constants";
 import { parseDate } from "@/lib/dates";
@@ -31,7 +32,7 @@ const MIN_IMAGES_TO_PUBLISH = 3;
  * Ownership is always checked here on the server — never inferred from the URL.
  */
 async function loadManagedProperty(propertyId: unknown) {
-  const user = await assertRole(["OWNER", "ADMIN"]);
+  const user = await assertRole(HOST_ROLES);
   if (typeof propertyId !== "string" || !propertyId) throw new AuthorizationError("Property not found.");
   const property = await prisma.property.findUnique({ where: { id: propertyId } });
   if (!property || !canManageProperty(user, property)) throw new AuthorizationError("Property not found.");
@@ -42,11 +43,18 @@ export async function savePropertyAction(_prev: FormState, formData: FormData): 
   return safely(async () => {
     const propertyId = formData.get("propertyId");
     const existing = propertyId ? await loadManagedProperty(propertyId) : null;
-    const user = existing?.user ?? (await assertRole(["OWNER"]));
+    // Administrators can list their own properties with the same tools as owners.
+    const user = existing?.user ?? (await assertRole(HOST_ROLES));
 
     const parsed = propertySchema.safeParse(formToObject(formData));
     if (!parsed.success) return invalid(parsed.error);
     const { nightlyPrice, cleaningFee, sleepingArrangements, houseRules, region, postalCode, ...rest } = parsed.data;
+
+    // Owners cannot use a category that is still pending or was rejected — only live ones.
+    const category = await prisma.category.findUnique({ where: { id: rest.categoryId }, select: { status: true } });
+    if (!isSelectableCategory(category)) {
+      return { ok: false, message: "Please correct the highlighted fields.", errors: { categoryId: "Choose a category from the list." } };
+    }
 
     const amenityKeys = formData.getAll("amenities").filter((v): v is string => typeof v === "string").slice(0, 40);
     const amenities = await prisma.amenity.findMany({ where: { key: { in: amenityKeys } }, select: { id: true } });
@@ -96,22 +104,26 @@ export async function listingStatusAction(_prev: FormState, formData: FormData):
     const intent = String(formData.get("intent"));
 
     if (intent === "submit") {
-      if (!["DRAFT", "REJECTED"].includes(property.status)) return { ok: false, message: "This listing has already been submitted." };
+      // Administrators have full authority: they can publish from any unpublished state, without a review step.
+      const isAdmin = user.role === "ADMIN";
+      const submittable = isAdmin ? ["DRAFT", "REJECTED", "PENDING_REVIEW", "UNLISTED"] : ["DRAFT", "REJECTED"];
+      if (!submittable.includes(property.status)) return { ok: false, message: "This listing has already been submitted." };
       const imageCount = await prisma.propertyImage.count({ where: { propertyId: property.id } });
       if (imageCount < MIN_IMAGES_TO_PUBLISH) {
         return { ok: false, message: `Add at least ${MIN_IMAGES_TO_PUBLISH} photos before submitting your listing.` };
       }
       const { requireListingApproval } = await getSettings();
-      const status = requireListingApproval ? "PENDING_REVIEW" : "PUBLISHED";
+      const needsReview = requireListingApproval && !isAdmin;
+      const status = needsReview ? "PENDING_REVIEW" : "PUBLISHED";
       await prisma.property.update({
         where: { id: property.id },
         data: { status, rejectionReason: null, publishedAt: status === "PUBLISHED" ? new Date() : property.publishedAt },
       });
-      await audit({ actorId: user.id, action: "property.submitted", entityType: "Property", entityId: property.id, metadata: { status } });
+      await audit({ actorId: user.id, action: "property.submitted", entityType: "Property", entityId: property.id, metadata: { status, publishedByAdmin: isAdmin, ownListing: property.ownerId === user.id } });
       revalidatePath("/", "layout");
       return {
         ok: true,
-        message: requireListingApproval ? "Submitted — our team will review your listing shortly." : "Your listing is now live.",
+        message: needsReview ? "Submitted — our team will review your listing shortly." : "Your listing is now live.",
       };
     }
 

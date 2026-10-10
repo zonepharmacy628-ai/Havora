@@ -4,7 +4,6 @@ import type {
   ListingStatus,
   PaymentMethod,
   PaymentStatus,
-  PropertyType,
   Role,
 } from "@prisma/client";
 
@@ -17,18 +16,6 @@ export const HERO_IMAGE = unsplash("1571896349842-33c89424de2d");
 export const AUTH_IMAGE = unsplash("1551882547-ff40c63fe5fa");
 export const HOST_IMAGE = unsplash("1613490493576-7fde63acd811");
 export const ABOUT_IMAGE = unsplash("1582719508461-905c673771fd");
-
-export const PROPERTY_TYPES: { value: PropertyType; label: string; plural: string; image: string }[] = [
-  { value: "VILLA", label: "Villa", plural: "Villas", image: unsplash("1613977257363-707ba9348227") },
-  { value: "APARTMENT", label: "Apartment", plural: "Apartments", image: unsplash("1502672260266-1c1ef2d93688") },
-  { value: "HOTEL", label: "Hotel", plural: "Hotels", image: unsplash("1566073771259-6a8506099945") },
-  { value: "BEACH_HOUSE", label: "Beach house", plural: "Beach houses", image: unsplash("1499793983690-e29da59ef1c2") },
-  { value: "CABIN", label: "Cabin", plural: "Cabins", image: unsplash("1510798831971-661eb04b3739") },
-  { value: "RESORT", label: "Resort", plural: "Resorts", image: unsplash("1520250497591-112f2f40a3f4") },
-];
-
-export const propertyTypeLabel = (type: PropertyType) =>
-  PROPERTY_TYPES.find((t) => t.value === type)?.label ?? type;
 
 /** Destination artwork for well-known cities; other cities fall back to a listing photo. */
 export const DESTINATION_IMAGES: Record<string, string> = {

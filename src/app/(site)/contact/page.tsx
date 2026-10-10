@@ -22,7 +22,7 @@ export default async function ContactPage() {
             <TextField name="name" label="Your name" defaultValue={user?.name} autoComplete="name" required />
             <TextField name="email" label="Email address" type="email" defaultValue={user?.email} autoComplete="email" required />
             <TextField name="subject" label="Subject" maxLength={120} required className="sm:col-span-2" />
-            <TextAreaField name="message" label="Message" rows={6} maxLength={3000} required hint="If this is about a booking, include your reference (e.g. HV-AB12CD34)." className="sm:col-span-2" />
+            <TextAreaField name="message" label="Message" rows={6} maxLength={3000} required hint="If this is about a booking, include your reference (e.g. HV-AB23CD45)." className="sm:col-span-2" />
             <div className="sm:col-span-2">
               <SubmitButton pendingText="Sending…">Send message</SubmitButton>
             </div>
@@ -40,9 +40,9 @@ export default async function ContactPage() {
           <div className="card card-pad">
             <CalendarCheck className="mb-3 size-6 text-gold-600" aria-hidden="true" />
             <h2 className="text-sm font-semibold text-ink">Manage a booking</h2>
-            <p className="mt-1 text-sm text-muted">View details, cancel or request a cancellation from your account.</p>
-            <Link href="/account/bookings" className="mt-2 inline-block text-sm font-semibold text-gold-700 hover:underline">
-              Go to My Bookings
+            <p className="mt-1 text-sm text-muted">View details, cancel or request a cancellation with your private booking link.</p>
+            <Link href="/bookings" className="mt-2 inline-block text-sm font-semibold text-gold-700 hover:underline">
+              Find my booking
             </Link>
           </div>
           <div className="card card-pad">

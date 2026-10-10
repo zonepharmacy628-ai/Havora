@@ -34,16 +34,30 @@ export const getCurrentUser = cache(async (): Promise<SessionUser | null> => {
   return user;
 });
 
+/** Where a signed-in user belongs. Only hosts and administrators have a dashboard. */
 export function dashboardPathFor(role: Role): string {
   if (role === "ADMIN") return "/admin";
   if (role === "OWNER") return "/owner";
-  return "/account";
+  return "/bookings";
 }
 
 /** Only allow same-site relative redirect targets. */
 export function safeNextPath(next: unknown, fallback: string): string {
   if (typeof next !== "string" || !next.startsWith("/") || next.startsWith("//") || next.includes("\\")) return fallback;
   return next;
+}
+
+export const ADMIN_LOGIN_PATH = "/admin/login";
+
+/** True for addresses inside the Admin Panel. */
+export function isAdminArea(path: unknown): boolean {
+  return typeof path === "string" && (path === "/admin" || path.startsWith("/admin/"));
+}
+
+/** Where the administrator sign-in sends people afterwards: always somewhere inside the Admin Panel. */
+export function adminNextPath(next: unknown): string {
+  const safe = safeNextPath(next, "/admin");
+  return isAdminArea(safe) && safe !== ADMIN_LOGIN_PATH ? safe : "/admin";
 }
 
 /** For pages: redirects to sign-in when there is no active session. */
@@ -55,6 +69,10 @@ export async function requireUser(nextPath?: string): Promise<SessionUser> {
 
 /** For pages: signed-in users without one of the roles are sent to their own dashboard. */
 export async function requireRole(roles: Role[], nextPath?: string): Promise<SessionUser> {
+  // Administrator-only pages send signed-out visitors to the administrator sign-in page.
+  if (roles.length === 1 && roles[0] === "ADMIN" && !(await getCurrentUser())) {
+    redirect(`${ADMIN_LOGIN_PATH}?next=${encodeURIComponent(adminNextPath(nextPath))}`);
+  }
   const user = await requireUser(nextPath);
   if (!roles.includes(user.role)) redirect(dashboardPathFor(user.role));
   return user;

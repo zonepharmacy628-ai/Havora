@@ -1,16 +1,18 @@
 import Link from "next/link";
 import { Building2, CalendarCheck, Hourglass, Plus, Wallet } from "lucide-react";
 import { bookingListInclude, ReservationTable } from "@/components/booking-list";
-import { BarChart, EmptyState, SectionHeading, StatCard } from "@/components/ui";
+import { BarChart, EmptyState, Notice, SectionHeading, StatCard } from "@/components/ui";
 import { completeFinishedStays } from "@/lib/bookings";
 import { formatBps, formatMoney } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
 import { monthlyBookingTotals, revenueSummary } from "@/lib/reports";
+import { HOST_ROLES } from "@/lib/booking-rules";
 import { requireRole } from "@/lib/session";
 import { getSettings } from "@/lib/settings";
 
-export default async function OwnerDashboard() {
-  const user = await requireRole(["OWNER"], "/owner");
+export default async function OwnerDashboard({ searchParams }: { searchParams: Promise<{ welcome?: string }> }) {
+  const { welcome } = await searchParams;
+  const user = await requireRole(HOST_ROLES, "/owner");
   const mine = { property: { ownerId: user.id } };
   await completeFinishedStays(prisma, mine);
 
@@ -27,13 +29,25 @@ export default async function OwnerDashboard() {
 
   return (
     <>
+      {welcome === "1" && (
+        <div className="mb-6">
+          <Notice tone="success">
+            <strong>Your host account is ready.</strong> Start by adding your first property: enter the details, add photos, set your availability, then submit it for review.{" "}
+            <Link href="/owner/properties/new" className="font-semibold underline underline-offset-2">
+              Add a property
+            </Link>
+          </Notice>
+        </div>
+      )}
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="heading-serif text-3xl">Welcome back, {user.name.split(" ")[0]}!</h1>
+          <h1 className="heading-serif text-3xl">
+            {welcome === "1" ? "Welcome" : "Welcome back"}, {user.name.split(" ")[0]}!
+          </h1>
           <p className="mt-1.5 text-sm text-muted">Here&apos;s your property performance overview.</p>
         </div>
-        <Link href="/owner/properties/new" className="btn btn-gold">
-          <Plus className="size-4" aria-hidden="true" /> Add property
+        <Link href="/owner/properties/new" className="btn btn-gold btn-lg">
+          <Plus className="size-5" aria-hidden="true" /> Add a Property
         </Link>
       </div>
 

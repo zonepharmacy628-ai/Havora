@@ -52,7 +52,7 @@ export default async function AdminReviewsPage({ searchParams }: { searchParams:
                     {review.status === "HIDDEN" && <span className="badge bg-red-50 text-red-700 ring-1 ring-red-200">Hidden</span>}
                   </div>
                   <p className="mt-0.5 text-xs text-muted">
-                    {review.author.name} ({review.author.email}) · {formatDate(review.createdAt)} · booking{" "}
+                    {review.author ? `${review.author.name} (${review.author.email})` : `${review.authorName ?? "Guest"} (guest booking)`} · {formatDate(review.createdAt)} · booking{" "}
                     <Link href={`/booking/${review.booking.reference}`} className="font-medium text-gold-700 hover:underline">
                       {review.booking.reference}
                     </Link>
