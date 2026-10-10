@@ -11,7 +11,7 @@ export default function RegisterPage() {
   return (
     <AuthCard
       title="You don't need an account to book"
-      subtitle="Choose your dates, enter your details at checkout and you're done. We email you a private link to manage your booking."
+      subtitle="Choose your dates, enter your details at checkout and you're done. You get a private link to manage your booking."
       footer={
         <>
           Have an existing account?{" "}
